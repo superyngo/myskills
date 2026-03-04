@@ -1,5 +1,5 @@
 ---
-name: push-update
+name: git-release
 description: Use when ready to commit and push changes to remote, or when preparing to release a new version with changelog and tag management
 argument-hint: [version]
 allowed-tools: Read, Write, Edit, Bash, Grep, AskUserQuestion, mcp__github__create_pull_request, mcp__github__list_tags, mcp__github__get_latest_release
@@ -390,13 +390,13 @@ fi
 
 ```bash
 # 快速推送（自動檢查、提交、詢問是否發版）
-/push-update
+/git-release
 
 # 直接指定版本號發布
-/push-update v1.3.0
+/git-release v1.3.0
 
 # 發布補丁版本
-/push-update v1.2.1
+/git-release v1.2.1
 ```
 
 ---
