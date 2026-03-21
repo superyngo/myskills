@@ -18,8 +18,9 @@
 -   **Testing**: Write tests for new functionality. Ensure existing tests pass.
 
 ## CLI Argument Handling
--   **Version Flag**: Prefer `--version`/`-v` to display version information
--   **Help on Insufficient Args**: When required arguments are missing, display the same help content as `-h`/`--help` instead of generic error messages
+-   **Interactive Selection on Insufficient Args**: When required arguments are missing:
+    -   If args are a simple enumerable list, present an interactive menu (arrow-key selection, e.g. via `inquirer`, `fzf`, or equivalent) for the user to choose from
+    -   If args are complex (require free-form input, nested parameters, or mixed types), display the full help content as with `-h`/`--help`
 
 ## File Placement for User-level Applications
 Follow the **XDG Base Directory Specification** for user-level application data placement across platforms:
