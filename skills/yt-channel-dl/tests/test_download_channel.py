@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from download_channel import (
+    STATE_FILE,
     USER_AGENTS,
     build_ydl_opts,
     filter_pending,
@@ -67,7 +68,7 @@ class TestScanExistingIds(unittest.TestCase):
 
     def test_ignores_state_file(self):
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, ".yt-channel-dl.json"), "w") as f:
+            with open(os.path.join(d, STATE_FILE), "w") as f:
                 json.dump({"downloaded_ids": []}, f)
             ids = scan_existing_ids(d)
             self.assertEqual(ids, set())
@@ -104,6 +105,10 @@ class TestFilterPending(unittest.TestCase):
 
     def test_empty_entries(self):
         self.assertEqual(filter_pending([], {"abc123"}), [])
+
+    def test_entry_without_id_is_excluded(self):
+        entries = [{"title": "No ID entry"}]
+        self.assertEqual(filter_pending(entries, set()), [])
 
 
 class TestBuildYdlOpts(unittest.TestCase):
@@ -142,7 +147,7 @@ class TestBuildYdlOpts(unittest.TestCase):
             rate_limit=None,
             user_agent=USER_AGENTS[0],
         )
-        self.assertTrue(opts["outtmpl"].startswith("/my/music"))
+        self.assertEqual(opts["outtmpl"], "/my/music/%(title)s [%(id)s].%(ext)s")
 
     def test_user_agent_in_headers(self):
         ua = USER_AGENTS[2]

@@ -21,11 +21,7 @@ from pathlib import Path
 try:
     import yt_dlp
 except ImportError:
-    print(
-        "ERROR: yt-dlp not installed. Run detect_python.py for install instructions.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    yt_dlp = None
 
 STATE_FILE = ".yt-channel-dl.json"
 
@@ -61,10 +57,13 @@ def load_state(output_dir):
 
 
 def save_state(output_dir, state):
-    """Write state dict to JSON file in output_dir."""
+    """Write state dict to JSON file in output_dir. Logs warning on failure."""
     path = Path(output_dir) / STATE_FILE
-    with open(path, "w") as f:
-        json.dump(state, f, indent=2)
+    try:
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+    except OSError as exc:
+        print(f"WARNING: could not save state to {path}: {exc}", file=sys.stderr)
 
 
 def scan_existing_ids(output_dir):
@@ -81,8 +80,8 @@ def scan_existing_ids(output_dir):
 
 
 def filter_pending(entries, downloaded_ids):
-    """Return entries whose 'id' is not in downloaded_ids."""
-    return [e for e in entries if e.get("id") not in downloaded_ids]
+    """Return entries whose 'id' is not in downloaded_ids. Excludes entries without an id."""
+    return [e for e in entries if e.get("id") and e["id"] not in downloaded_ids]
 
 
 def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
