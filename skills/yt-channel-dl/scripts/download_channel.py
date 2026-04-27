@@ -106,3 +106,184 @@ def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
         ]
         opts["ffmpeg_location"] = ffmpeg_path
     return opts
+
+
+def fetch_video_list(channel_url):
+    """Fetch all video entries from channel URL without downloading.
+
+    Returns list of dicts: [{"id": str, "title": str, "url": str}, ...]
+    """
+    ydl_opts = {
+        "extract_flat": "in_playlist",
+        "quiet": True,
+        "no_warnings": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(channel_url, download=False)
+
+    entries = info.get("entries", []) if info else []
+
+    # Flatten one nesting level (channel → playlist → videos)
+    flat = []
+    for e in entries:
+        if e and e.get("_type") == "playlist":
+            flat.extend(e.get("entries") or [])
+        elif e:
+            flat.append(e)
+
+    result = []
+    for e in flat:
+        if not e or not e.get("id"):
+            continue
+        result.append(
+            {
+                "id": e["id"],
+                "title": e.get("title") or e["id"],
+                "url": e.get("url") or f"https://www.youtube.com/watch?v={e['id']}",
+            }
+        )
+    return result
+
+
+def make_progress_hook(title):
+    """Return a yt-dlp progress hook that prints a compact progress bar to stdout."""
+    last_pct = [-1]
+
+    def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded_bytes = d.get("downloaded_bytes") or 0
+            speed = d.get("speed") or 0
+            pct = int(downloaded_bytes / total * 100) if total else 0
+            if pct != last_pct[0]:
+                last_pct[0] = pct
+                bar_len = 25
+                filled = int(bar_len * pct / 100)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                speed_str = f"{speed / 1024:.0f}KB/s" if speed else "?KB/s"
+                line = f"\r  [{bar}] {pct:3d}% {speed_str}  {title[:35]}"
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        elif d["status"] == "finished":
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+    return hook
+
+
+def print_summary(total, skipped, downloaded, failed_list):
+    """Print final download summary table."""
+    line = "━" * 37
+    print(f"\n{line}")
+    print(f"✓ Downloaded:                {downloaded}")
+    print(f"⏭  Skipped (already exists): {skipped}")
+    print(f"✗ Failed:                    {len(failed_list)}")
+    print(line)
+    if failed_list:
+        print("\nFailed videos:")
+        for item in failed_list:
+            print(f'  - "{item["title"]}" [{item["id"]}] — {item["error"]}')
+
+
+def main():
+    import shutil
+
+    if yt_dlp is None:
+        print(
+            "ERROR: yt-dlp not installed. Run detect_python.py for install instructions.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(
+        description="Download all audio from a YouTube channel."
+    )
+    parser.add_argument("channel_url", help="YouTube channel URL")
+    parser.add_argument("output_dir", help="Directory to save audio files")
+    parser.add_argument(
+        "--format",
+        default="mp3",
+        choices=["mp3", "aac", "m4a", "flac"],
+        dest="fmt",
+    )
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--rate-limit", default="500K")
+    parser.add_argument("--min-sleep", type=float, default=2.0)
+    parser.add_argument("--max-sleep", type=float, default=8.0)
+    parser.add_argument("--burst", type=int, default=10)
+    parser.add_argument("--burst-sleep", type=float, default=45.0)
+    parser.add_argument("--ffmpeg-path", default=None)
+    args = parser.parse_args()
+
+    ffmpeg_path = args.ffmpeg_path or shutil.which("ffmpeg")
+    fmt = args.fmt
+
+    if fmt == "mp3" and not ffmpeg_path:
+        print(
+            "WARNING: ffmpeg not found — MP3 requires ffmpeg. Falling back to m4a.",
+            file=sys.stderr,
+        )
+        fmt = "m4a"
+
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    rate_limit = parse_rate_limit(args.rate_limit)
+
+    # Step 1: Fetch video list
+    print(f"Fetching video list from: {args.channel_url}")
+    try:
+        entries = fetch_video_list(args.channel_url)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch video list: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Found {len(entries)} videos.")
+    time.sleep(random.uniform(1, 3))
+
+    # Step 2: Filter already downloaded
+    state = load_state(args.output_dir)
+    downloaded_ids = set(state["downloaded_ids"]) | scan_existing_ids(args.output_dir)
+    pending = filter_pending(entries, downloaded_ids)
+    skipped = len(entries) - len(pending)
+    print(f"Skipping {skipped} already downloaded. {len(pending)} to go.")
+
+    if not pending:
+        print_summary(len(entries), skipped, 0, [])
+        return
+
+    # Step 3: Download loop
+    downloaded_count = 0
+    failed_list = []
+
+    for i, entry in enumerate(pending, 1):
+        # Burst rest every N videos (not before the first download)
+        if i > 1 and (i - 1) % args.burst == 0:
+            rest = random.uniform(args.burst_sleep * 0.8, args.burst_sleep * 1.2)
+            print(f"\n  [Burst rest: sleeping {rest:.0f}s]")
+            time.sleep(rest)
+
+        # Per-video humanized delay
+        time.sleep(random.uniform(args.min_sleep, args.max_sleep))
+
+        ua = random.choice(USER_AGENTS)
+        title = entry["title"]
+        print(f"\n[{i}/{len(pending)}] {title}")
+
+        opts = build_ydl_opts(args.output_dir, fmt, ffmpeg_path, rate_limit, ua)
+        opts["progress_hooks"] = [make_progress_hook(title)]
+
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([entry["url"]])
+            downloaded_count += 1
+            state["downloaded_ids"].append(entry["id"])
+            save_state(args.output_dir, state)
+        except yt_dlp.utils.DownloadError as e:
+            err_msg = str(e).split("\n")[0][:100]
+            print(f"  FAILED: {err_msg}", file=sys.stderr)
+            failed_list.append({"id": entry["id"], "title": title, "error": err_msg})
+
+    print_summary(len(entries), skipped, downloaded_count, failed_list)
+
+
+if __name__ == "__main__":
+    main()
