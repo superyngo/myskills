@@ -207,7 +207,6 @@ def main():
         choices=["mp3", "aac", "m4a", "flac"],
         dest="fmt",
     )
-    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--rate-limit", default="500K")
     parser.add_argument("--min-sleep", type=float, default=2.0)
     parser.add_argument("--max-sleep", type=float, default=8.0)
@@ -222,9 +221,9 @@ def main():
     ffmpeg_path = args.ffmpeg_path or shutil.which("ffmpeg")
     fmt = args.fmt
 
-    if fmt == "mp3" and not ffmpeg_path:
+    if fmt in ("mp3", "aac", "flac") and not ffmpeg_path:
         print(
-            "WARNING: ffmpeg not found — MP3 conversion requires ffmpeg. "
+            f"WARNING: ffmpeg not found — {fmt.upper()} conversion requires ffmpeg. "
             "Falling back to native m4a stream (no re-encoding).",
             file=sys.stderr,
         )
@@ -281,6 +280,7 @@ def main():
                 ydl.download([entry["url"]])
             downloaded_count += 1
             state["downloaded_ids"].append(entry["id"])
+            state["downloaded_ids"] = list(dict.fromkeys(state["downloaded_ids"]))
             save_state(args.output_dir, state)
         except yt_dlp.utils.DownloadError as e:
             err_msg = str(e).split("\n")[0][:100]

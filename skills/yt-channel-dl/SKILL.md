@@ -44,7 +44,7 @@ python3 skills/yt-channel-dl/scripts/detect_python.py
 ```
 → 停止流程。
 
-**若 `has_ffmpeg == false` 且使用者要求 `mp3` 格式：**
+**若 `has_ffmpeg == false` 且 format 為 `mp3`、`aac` 或 `flac`：**
 ```
 警告：未偵測到 ffmpeg，無法轉換為 MP3。
 選項：
@@ -67,7 +67,8 @@ python3 skills/yt-channel-dl/scripts/detect_python.py
 uv run --with yt-dlp python3 skills/yt-channel-dl/scripts/download_channel.py \
   "<channel_url>" "<output_dir>" \
   --format <fmt> \
-  --rate-limit 500K
+  --rate-limit 500K \
+  [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
 ```
 
 **runner = `"python3"` 或 `"python"`：**
@@ -75,7 +76,8 @@ uv run --with yt-dlp python3 skills/yt-channel-dl/scripts/download_channel.py \
 python3 skills/yt-channel-dl/scripts/download_channel.py \
   "<channel_url>" "<output_dir>" \
   --format <fmt> \
-  --rate-limit 500K
+  --rate-limit 500K \
+  [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
 ```
 
 （若 `runner` 是 `"python"`，將 `python3` 替換為 `python`）
