@@ -43,10 +43,24 @@ class TestDetectPython(unittest.TestCase):
         data = json.loads(result.stdout)
         self.assertIsInstance(data["uv_available"], bool)
 
+    def test_has_yt_dlp_is_bool(self):
+        result = self._run_script()
+        data = json.loads(result.stdout)
+        self.assertIsInstance(data["has_yt_dlp"], bool)
+
     def test_has_ffmpeg_is_bool(self):
         result = self._run_script()
         data = json.loads(result.stdout)
         self.assertIsInstance(data["has_ffmpeg"], bool)
+
+    def test_ffmpeg_path_consistent_with_has_ffmpeg(self):
+        result = self._run_script()
+        data = json.loads(result.stdout)
+        if data["has_ffmpeg"]:
+            self.assertIsInstance(data["ffmpeg_path"], str)
+            self.assertTrue(len(data["ffmpeg_path"]) > 0)
+        else:
+            self.assertIsNone(data["ffmpeg_path"])
 
 
 if __name__ == "__main__":

@@ -23,11 +23,11 @@ def check_yt_dlp(python_cmd: str) -> bool:
             timeout=5,
         )
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def check_ffmpeg() -> tuple:
+def check_ffmpeg() -> "tuple[bool, str | None]":
     path = shutil.which("ffmpeg")
     return (path is not None), path
 
