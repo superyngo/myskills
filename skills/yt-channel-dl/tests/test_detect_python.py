@@ -15,6 +15,7 @@ class TestDetectPython(unittest.TestCase):
             [sys.executable, SCRIPT],
             capture_output=True,
             text=True,
+            timeout=30,
         )
         return result
 
@@ -61,6 +62,20 @@ class TestDetectPython(unittest.TestCase):
             self.assertTrue(len(data["ffmpeg_path"]) > 0)
         else:
             self.assertIsNone(data["ffmpeg_path"])
+
+    def test_runner_consistent_with_has_yt_dlp(self):
+        data = json.loads(self._run_script().stdout)
+        if data["runner"] is not None:
+            self.assertTrue(data["has_yt_dlp"])
+        else:
+            self.assertFalse(data["has_yt_dlp"])
+
+    def test_uv_available_consistent_with_runner(self):
+        data = json.loads(self._run_script().stdout)
+        if data["runner"] == "uv":
+            self.assertTrue(data["uv_available"])
+        else:
+            self.assertFalse(data["uv_available"])
 
 
 if __name__ == "__main__":
