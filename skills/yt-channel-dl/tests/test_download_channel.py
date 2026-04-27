@@ -45,7 +45,7 @@ class TestStateFile(unittest.TestCase):
 
     def test_load_returns_empty_on_corrupt_json(self):
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, ".yt-channel-dl.json"), "w") as f:
+            with open(os.path.join(d, STATE_FILE), "w") as f:
                 f.write("not json")
             state = load_state(d)
             self.assertEqual(state, {"downloaded_ids": []})
