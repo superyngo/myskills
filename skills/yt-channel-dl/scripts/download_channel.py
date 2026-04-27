@@ -87,7 +87,7 @@ def filter_pending(entries, downloaded_ids):
 def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
     """Build yt-dlp YoutubeDL options dict for a single video download."""
     opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio/best" if (not ffmpeg_path and fmt == "m4a") else "bestaudio/best",
         "outtmpl": str(Path(output_dir) / "%(title)s [%(id)s].%(ext)s"),
         "http_headers": {"User-Agent": user_agent},
         "retries": 3,
@@ -175,6 +175,7 @@ def print_summary(total, skipped, downloaded, failed_list):
     """Print final download summary table."""
     line = "━" * 37
     print(f"\n{line}")
+    print(f"  Total in channel:          {total}")
     print(f"✓ Downloaded:                {downloaded}")
     print(f"⏭  Skipped (already exists): {skipped}")
     print(f"✗ Failed:                    {len(failed_list)}")
@@ -215,12 +216,16 @@ def main():
     parser.add_argument("--ffmpeg-path", default=None)
     args = parser.parse_args()
 
+    if args.burst < 1:
+        parser.error("--burst must be >= 1")
+
     ffmpeg_path = args.ffmpeg_path or shutil.which("ffmpeg")
     fmt = args.fmt
 
     if fmt == "mp3" and not ffmpeg_path:
         print(
-            "WARNING: ffmpeg not found — MP3 requires ffmpeg. Falling back to m4a.",
+            "WARNING: ffmpeg not found — MP3 conversion requires ffmpeg. "
+            "Falling back to native m4a stream (no re-encoding).",
             file=sys.stderr,
         )
         fmt = "m4a"
