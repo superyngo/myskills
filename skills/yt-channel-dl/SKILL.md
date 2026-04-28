@@ -71,7 +71,7 @@ yt-dlp 需要 JavaScript runtime 才能解析 YouTube。
 
 ## 步驟 3：執行下載
 
-根據偵測結果的 `runner` 值組裝指令：
+根據偵測結果的 `runner` 值組裝指令（加上 `--status-file`）：
 
 **runner = `"uv"`：**
 ```bash
@@ -79,6 +79,7 @@ uv run --with yt-dlp python3 skills/yt-channel-dl/scripts/download_channel.py \
   "<url>" "<output_dir>" \
   --format <fmt> \
   --rate-limit 500K \
+  --status-file "<output_dir>/status.json" \
   [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
 ```
 
@@ -88,20 +89,50 @@ python3 skills/yt-channel-dl/scripts/download_channel.py \
   "<url>" "<output_dir>" \
   --format <fmt> \
   --rate-limit 500K \
+  --status-file "<output_dir>/status.json" \
   [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
 ```
 
 （若 `runner` 是 `"python"`，將 `python3` 替換為 `python`）
 
-執行後讓輸出串流到終端，等待完成。
+### 背景執行
+
+**不要**直接執行上述指令。改為在背景啟動，將 stdout/stderr 導向日誌檔案：
+
+```bash
+nohup <上述指令> > "<output_dir>/download.log" 2>&1 &
+echo "PID=$!"
+```
+
+此指令會立即返回 PID，不會產生大量 stdout token。
+
+告知用戶下載已啟動，並提供監看方式：
+
+> 下載已在背景啟動！
+> - 即時進度：`tail -f "<output_dir>/download.log"`
+> - 簡要狀態：`cat "<output_dir>/status.json"`
+
+### 等待完成
+
+以下指令會每 30 秒檢查背景程序是否還在運行，**期間不產生任何輸出**（零 token 消耗）：
+程序結束後自動印出最終 status.json：
+
+```bash
+while kill -0 <PID> 2>/dev/null; do sleep 30; done && cat "<output_dir>/status.json"
+```
+
+若用戶表示不想等待（或頻道影片非常多、預計耗時很長），可跳過等待，改為：
+> 下載正在背景進行中。需要時請告訴我「檢查下載狀態」，我會讀取 status.json 回報進度。
 
 ---
 
 ## 步驟 4：顯示結果
 
-下載完成後，summary 已由腳本直接列印。若有失敗項目，告知用戶：
+從 status.json 讀取最終結果（`"phase": "done"`）並呈現給用戶。
 
-> 有 N 個影片下載失敗（詳見上方清單）。  
+若 status.json 中 `failed > 0`，告知用戶：
+
+> 有 N 個影片下載失敗（詳見 status.json 中的 failed_list）。
 > 重新執行相同指令可自動跳過已下載的部分，僅重試失敗的影片。
 
 ---

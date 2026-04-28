@@ -79,6 +79,19 @@ def scan_existing_ids(output_dir):
     return ids
 
 
+def write_status(status_file, data):
+    """Write compact status dict to JSON file atomically. No-op if status_file is None."""
+    if not status_file:
+        return
+    tmp = status_file + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, status_file)
+    except OSError:
+        pass
+
+
 def filter_pending(entries, downloaded_ids):
     """Return entries whose 'id' is not in downloaded_ids. Excludes entries without an id."""
     return [e for e in entries if e.get("id") and e["id"] not in downloaded_ids]
@@ -215,6 +228,7 @@ def main():
     parser.add_argument("--burst", type=int, default=10)
     parser.add_argument("--burst-sleep", type=float, default=45.0)
     parser.add_argument("--ffmpeg-path", default=None)
+    parser.add_argument("--status-file", default=None)
     args = parser.parse_args()
 
     if args.burst < 1:
@@ -233,12 +247,16 @@ def main():
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     rate_limit = parse_rate_limit(args.rate_limit)
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    sf = args.status_file
 
     # Step 1: Fetch video list
+    write_status(sf, {"phase": "fetching", "started_at": started_at})
     print(f"Fetching video list from: {args.channel_url}")
     try:
         entries = fetch_video_list(args.channel_url)
     except Exception as e:
+        write_status(sf, {"phase": "error", "error": str(e), "started_at": started_at})
         print(f"ERROR: Failed to fetch video list: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -253,6 +271,12 @@ def main():
     print(f"Skipping {skipped} already downloaded. {len(pending)} to go.")
 
     if not pending:
+        write_status(sf, {
+            "phase": "done", "total": len(entries),
+            "downloaded": 0, "skipped": skipped, "failed": 0,
+            "failed_list": [], "started_at": started_at,
+            "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
         print_summary(len(entries), skipped, 0, [])
         return
 
@@ -274,6 +298,14 @@ def main():
         title = entry["title"]
         print(f"\n[{i}/{len(pending)}] {title}")
 
+        write_status(sf, {
+            "phase": "downloading", "total": len(entries),
+            "completed": downloaded_count, "skipped": skipped,
+            "failed": len(failed_list), "current": title[:60],
+            "current_index": f"{i}/{len(pending)}",
+            "pending_count": len(pending), "started_at": started_at,
+        })
+
         opts = build_ydl_opts(args.output_dir, fmt, ffmpeg_path, rate_limit, ua)
         opts["progress_hooks"] = [make_progress_hook(title)]
 
@@ -289,6 +321,13 @@ def main():
             print(f"  FAILED: {err_msg}", file=sys.stderr)
             failed_list.append({"id": entry["id"], "title": title, "error": err_msg})
 
+    write_status(sf, {
+        "phase": "done", "total": len(entries),
+        "downloaded": downloaded_count, "skipped": skipped,
+        "failed": len(failed_list), "failed_list": failed_list,
+        "started_at": started_at,
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
     print_summary(len(entries), skipped, downloaded_count, failed_list)
 
 
