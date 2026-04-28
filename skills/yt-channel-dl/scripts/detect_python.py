@@ -3,7 +3,8 @@
 
 Outputs JSON to stdout:
   {"runner": "uv"|"python3"|"python"|null, "uv_available": bool,
-   "has_yt_dlp": bool, "has_ffmpeg": bool, "ffmpeg_path": str|null}
+   "has_yt_dlp": bool, "has_ffmpeg": bool, "ffmpeg_path": str|null,
+   "js_runtime": "node"|"bun"|"deno"|null}
 """
 import json
 import shutil
@@ -32,17 +33,26 @@ def check_ffmpeg() -> "tuple[bool, str | None]":
     return (path is not None), path
 
 
+def detect_js_runtime() -> "str | None":
+    for cmd in ("node", "bun", "deno"):
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+
 def main():
     uv_available = check_uv()
     ffmpeg_found, ffmpeg_path = check_ffmpeg()
+    js_runtime = detect_js_runtime()
 
     if uv_available:
         result = {
             "runner": "uv",
             "uv_available": True,
-            "has_yt_dlp": True,  # uv installs yt-dlp on demand via --with
+            "has_yt_dlp": True,
             "has_ffmpeg": ffmpeg_found,
             "ffmpeg_path": ffmpeg_path,
+            "js_runtime": js_runtime,
         }
     elif check_yt_dlp("python3"):
         result = {
@@ -51,6 +61,7 @@ def main():
             "has_yt_dlp": True,
             "has_ffmpeg": ffmpeg_found,
             "ffmpeg_path": ffmpeg_path,
+            "js_runtime": js_runtime,
         }
     elif check_yt_dlp("python"):
         result = {
@@ -59,6 +70,7 @@ def main():
             "has_yt_dlp": True,
             "has_ffmpeg": ffmpeg_found,
             "ffmpeg_path": ffmpeg_path,
+            "js_runtime": js_runtime,
         }
     else:
         result = {
@@ -67,6 +79,7 @@ def main():
             "has_yt_dlp": False,
             "has_ffmpeg": ffmpeg_found,
             "ffmpeg_path": ffmpeg_path,
+            "js_runtime": js_runtime,
         }
         print(
             "ERROR: yt-dlp not found. Install with:\n"

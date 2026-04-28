@@ -44,6 +44,16 @@ python3 skills/yt-channel-dl/scripts/detect_python.py
 ```
 → 停止流程。
 
+**若 `js_runtime == null`（找不到 Node/Bun/Deno）：**
+```
+yt-dlp 需要 JavaScript runtime 才能解析 YouTube。
+請安裝以下任一：
+  1. Node.js   — macOS: brew install node | 其他: https://nodejs.org
+  2. Bun       — macOS: brew install bun  | 其他: curl -fsSL https://bun.sh/install | bash
+  3. Deno      — macOS: brew install deno | 其他: curl -fsSL https://deno.land/install.sh | sh
+```
+詢問用戶選擇並執行安裝指令，安裝後重新執行偵測。
+
 **若 `has_ffmpeg == false` 且 format 為 `mp3`、`aac` 或 `flac`：**
 ```
 警告：未偵測到 ffmpeg，無法轉換為 MP3。

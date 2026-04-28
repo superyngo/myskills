@@ -93,6 +93,7 @@ def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
         "retries": 3,
         "quiet": True,
         "no_warnings": True,
+        "remote_components": ["ejs:github"],
     }
     if rate_limit:
         opts["ratelimit"] = rate_limit
@@ -117,6 +118,7 @@ def fetch_video_list(channel_url):
         "extract_flat": "in_playlist",
         "quiet": True,
         "no_warnings": True,
+        "remote_components": ["ejs:github"],
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(channel_url, download=False)
