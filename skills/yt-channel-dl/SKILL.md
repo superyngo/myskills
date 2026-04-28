@@ -1,23 +1,24 @@
 ---
 name: yt-channel-dl
-description: 從 YouTube 頻道 URL 下載所有影片音頻為 MP3（或其他格式），支援斷點續傳與擬人化爬取
-argument-hint: "[channel_url] [output_dir] [--format mp3|aac|m4a|flac]"
+description: 從 YouTube 頻道或播放清單 URL 下載所有影片音頻為 MP3（或其他格式），支援斷點續傳與擬人化爬取
+argument-hint: "[url] [output_dir] [--format mp3|aac|m4a|flac]"
 allowed-tools: Bash, AskUserQuestion
 ---
 
-# YouTube Channel Audio Downloader
+# YouTube Channel / Playlist Audio Downloader
 
-從 YouTube 頻道下載所有影片音頻，輸出為 MP3（預設）、AAC、M4A 或 FLAC。  
+從 YouTube 頻道或播放清單下載所有影片音頻，輸出為 MP3（預設）、AAC、M4A 或 FLAC。
 支援斷點續傳（自動跳過已下載）與擬人化爬取（隨機延遲 + User-Agent 輪換）。
 
 ---
 
 ## 步驟 1：收集參數
 
-從第一個 argument 取得 `channel_url`。若未提供，詢問：
+從第一個 argument 取得 `url`。若未提供，詢問：
 
-> 請提供 YouTube 頻道 URL  
-> 例如：`https://www.youtube.com/@ChannelName` 或 `https://www.youtube.com/channel/UCxxxxxx`
+> 請提供 YouTube 頻道或播放清單 URL
+> 例如：`https://www.youtube.com/@ChannelName`、`https://www.youtube.com/channel/UCxxxxxx`
+> 或播放清單：`https://www.youtube.com/playlist?list=PLxxxxxx`
 
 從第二個 argument 取得 `output_dir`。若未提供，詢問：
 
@@ -75,7 +76,7 @@ yt-dlp 需要 JavaScript runtime 才能解析 YouTube。
 **runner = `"uv"`：**
 ```bash
 uv run --with yt-dlp python3 skills/yt-channel-dl/scripts/download_channel.py \
-  "<channel_url>" "<output_dir>" \
+  "<url>" "<output_dir>" \
   --format <fmt> \
   --rate-limit 500K \
   [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
@@ -84,7 +85,7 @@ uv run --with yt-dlp python3 skills/yt-channel-dl/scripts/download_channel.py \
 **runner = `"python3"` 或 `"python"`：**
 ```bash
 python3 skills/yt-channel-dl/scripts/download_channel.py \
-  "<channel_url>" "<output_dir>" \
+  "<url>" "<output_dir>" \
   --format <fmt> \
   --rate-limit 500K \
   [--ffmpeg-path "<ffmpeg_path>" # 若 ffmpeg_path 不為 null]
@@ -109,7 +110,7 @@ python3 skills/yt-channel-dl/scripts/download_channel.py \
 
 | 參數 | 預設值 | 說明 |
 |---|---|---|
-| `channel_url` | — | YouTube 頻道/playlist URL |
+| `url` | — | YouTube 頻道或播放清單 URL |
 | `output_dir` | — | 輸出目錄（自動建立） |
 | `--format` | `mp3` | 音頻格式：mp3 / aac / m4a / flac |
 | `--rate-limit` | `500K` | 下載限速（例：`1M`、`500K`） |

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Download all audio from a YouTube channel.
+"""Download all audio from a YouTube channel or playlist.
 
 Usage:
-    python3 download_channel.py <channel_url> <output_dir>
+    python3 download_channel.py <url> <output_dir>
         [--format mp3|aac|m4a|flac]
         [--rate-limit 500K]
         [--min-sleep 2] [--max-sleep 8]
@@ -177,7 +177,7 @@ def print_summary(total, skipped, downloaded, failed_list):
     """Print final download summary table."""
     line = "━" * 37
     print(f"\n{line}")
-    print(f"  Total in channel:          {total}")
+    print(f"  Total:                      {total}")
     print(f"✓ Downloaded:                {downloaded}")
     print(f"⏭  Skipped (already exists): {skipped}")
     print(f"✗ Failed:                    {len(failed_list)}")
@@ -199,9 +199,9 @@ def main():
         sys.exit(1)
 
     parser = argparse.ArgumentParser(
-        description="Download all audio from a YouTube channel."
+        description="Download all audio from a YouTube channel or playlist."
     )
-    parser.add_argument("channel_url", help="YouTube channel URL")
+    parser.add_argument("channel_url", help="YouTube channel or playlist URL")
     parser.add_argument("output_dir", help="Directory to save audio files")
     parser.add_argument(
         "--format",
