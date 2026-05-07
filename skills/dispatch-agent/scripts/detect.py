@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 KNOWN_CLIS = ["claude", "gemini", "codex", "copilot", "opencode"]
@@ -15,37 +16,8 @@ def load_templates() -> dict:
     """Load templates from TOML file. Returns empty dict if file doesn't exist."""
     if not TEMPLATES_PATH.exists():
         return {}
-    try:
-        # Try Python 3.11+ tomllib first
-        import tomllib
-        with open(TEMPLATES_PATH, "rb") as f:
-            return tomllib.load(f)
-    except ImportError:
-        # Fallback: parse TOML manually for basic key=value structure
-        templates = {}
-        try:
-            with open(TEMPLATES_PATH, "r") as f:
-                current_section = None
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.startswith("[") and line.endswith("]"):
-                        current_section = line[1:-1]
-                        templates[current_section] = {}
-                    elif "=" in line and current_section:
-                        key, val = line.split("=", 1)
-                        key = key.strip()
-                        val = val.strip().strip('"\'')
-                        # Parse boolean strings
-                        if val.lower() == "true":
-                            val = True
-                        elif val.lower() == "false":
-                            val = False
-                        templates[current_section][key] = val
-        except Exception:
-            pass
-        return templates
+    with open(TEMPLATES_PATH, "rb") as f:
+        return tomllib.load(f)
 
 
 def check_cli(name: str, templates: dict) -> dict:

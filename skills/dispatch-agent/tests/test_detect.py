@@ -2,11 +2,20 @@ import json
 import sys
 import os
 import unittest
+import tempfile
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 # Add scripts dir to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+# Mock tomllib for Python < 3.11
+try:
+    import tomllib
+except ImportError:
+    import sys
+    from unittest.mock import MagicMock
+    sys.modules['tomllib'] = MagicMock()
 
 import detect
 
@@ -76,16 +85,42 @@ class TestDetectCli(unittest.TestCase):
 
     @patch("detect.shutil.which")
     @patch("detect.os.access")
-    def test_verified_false_copied_from_template(self, mock_access, mock_which):
+    @patch("detect.subprocess.run")
+    def test_verified_false_copied_from_template(self, mock_run, mock_access, mock_which):
         mock_which.return_value = "/usr/bin/opencode"
         mock_access.return_value = True
+        mock_run.return_value = MagicMock(returncode=0, stdout="opencode 0.5\n")
         result = detect.check_cli("opencode", self.templates)
         self.assertFalse(result["verified"])
 
-    def test_missing_templates_file_returns_null_versions(self):
+    @patch("detect.shutil.which")
+    def test_missing_templates_file_returns_null_versions(self, mock_which):
+        mock_which.return_value = None  # CLI not found
         result = detect.check_cli("claude", {})
         # no template → version null, verified defaults to True
         self.assertIsNone(result.get("version"))
+        self.assertFalse(result["callable"])
+
+
+class TestLoadTemplates(unittest.TestCase):
+    def test_returns_empty_when_file_missing(self):
+        # Temporarily point TEMPLATES_PATH to a nonexistent file
+        orig = detect.TEMPLATES_PATH
+        detect.TEMPLATES_PATH = Path("/nonexistent/path.toml")
+        try:
+            result = detect.load_templates()
+            self.assertEqual(result, {})
+        finally:
+            detect.TEMPLATES_PATH = orig
+
+    @patch("detect.tomllib.load")
+    def test_loads_valid_templates(self, mock_load):
+        mock_load.return_value = {
+            "claude": {"prompt_flag": "-p", "version_flag": "--version"}
+        }
+        result = detect.load_templates()
+        self.assertIn("claude", result)
+        self.assertEqual(result["claude"]["prompt_flag"], "-p")
 
 
 if __name__ == "__main__":
