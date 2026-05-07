@@ -67,12 +67,21 @@ version_flag = "--version"
 extra_args = []
 
 [opencode]
-prompt_flag = ""
-model_flag = ""
+subcommand = "run"
+prompt_positional = true
+model_flag = "--model"
 file_input_mode = "arg"
 version_flag = "--version"
-verified = false
+verified = true
 extra_args = []
+
+[gemini-npx]
+detect_binary = "npx"
+prompt_flag = "-p"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = ""
+extra_args = ["@google/gemini-cli@latest", "--skip-trust"]
 """
 
 
@@ -164,10 +173,51 @@ class TestBuildCommand(unittest.TestCase):
         debug_idx = cmd.index("--debug")
         self.assertLess(extra_idx, debug_idx)
 
-    def test_empty_prompt_flag_returns_none(self):
-        agent = {"id": "opencode", "cli": "opencode", "model": "default", "args": [], "env": []}
-        result = dispatch.build_command(agent, self.templates["opencode"], "hi")
+    def test_empty_prompt_flag_and_not_positional_returns_none(self):
+        """A template with empty prompt_flag and prompt_positional=False cannot dispatch."""
+        tmpl = {"prompt_flag": "", "prompt_positional": False, "model_flag": "", "extra_args": []}
+        agent = {"id": "x", "cli": "x", "model": "default", "args": [], "env": []}
+        result = dispatch.build_command(agent, tmpl, "hi")
         self.assertIsNone(result)
+
+    def test_opencode_subcommand_positional_prompt(self):
+        """opencode: subcommand 'run' + positional prompt, no model."""
+        agent = {"id": "opencode-default", "cli": "opencode", "model": "default", "args": [], "env": []}
+        cmd = dispatch.build_command(agent, self.templates["opencode"], "hello world")
+        self.assertEqual(cmd, ["opencode", "run", "hello world"])
+
+    def test_opencode_positional_prompt_with_model(self):
+        """opencode: subcommand + positional prompt + --model flag."""
+        agent = {"id": "opencode-glm", "cli": "opencode", "model": "zai-coding-plan/glm-5.1", "args": [], "env": []}
+        cmd = dispatch.build_command(agent, self.templates["opencode"], "hi")
+        self.assertEqual(cmd, ["opencode", "run", "hi", "--model", "zai-coding-plan/glm-5.1"])
+
+    def test_opencode_positional_prompt_with_model_and_agent_args(self):
+        """opencode: agent args (e.g. --thinking) appear after model."""
+        agent = {"id": "opencode-glm", "cli": "opencode", "model": "zai-coding-plan/glm-5.1",
+                 "args": ["--thinking"], "env": []}
+        cmd = dispatch.build_command(agent, self.templates["opencode"], "hi")
+        self.assertEqual(cmd, ["opencode", "run", "hi", "--model", "zai-coding-plan/glm-5.1", "--thinking"])
+
+    def test_gemini_npx_command(self):
+        """gemini-npx: npx + extra_args + -p prompt."""
+        agent = {"id": "gemini-npx-default", "cli": "npx", "model": "default", "args": [], "env": []}
+        cmd = dispatch.build_command(agent, self.templates["gemini-npx"], "hi")
+        self.assertEqual(cmd, ["npx", "@google/gemini-cli@latest", "--skip-trust", "-p", "hi"])
+
+    def test_gemini_npx_with_model(self):
+        """gemini-npx: model flag inserted before prompt flag."""
+        agent = {"id": "gemini-npx-pro", "cli": "npx", "model": "gemini-2.5-pro", "args": [], "env": []}
+        cmd = dispatch.build_command(agent, self.templates["gemini-npx"], "hi")
+        self.assertEqual(cmd,
+            ["npx", "@google/gemini-cli@latest", "--skip-trust", "--model", "gemini-2.5-pro", "-p", "hi"])
+
+    def test_positional_no_prompt_flag_no_subcommand(self):
+        """prompt_positional=True with no subcommand: prompt appended directly after cli."""
+        tmpl = {"prompt_positional": True, "model_flag": "", "extra_args": [], "subcommand": ""}
+        agent = {"id": "x", "cli": "mycli", "model": "default", "args": [], "env": []}
+        cmd = dispatch.build_command(agent, tmpl, "task text")
+        self.assertEqual(cmd, ["mycli", "task text"])
 
 
 class TestResolveEnv(unittest.TestCase):

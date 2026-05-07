@@ -73,22 +73,37 @@ def find_config(config_arg: str | None) -> str | None:
 
 def build_command(agent: dict, template: dict, prompt: str) -> list | None:
     prompt_flag = template.get("prompt_flag", "")
-    if not prompt_flag:
-        return None
-
+    prompt_positional = template.get("prompt_positional", False)
+    subcommand = template.get("subcommand", "")
     model_flag = template.get("model_flag", "")
     extra_args = template.get("extra_args", [])
     agent_args = agent.get("args", [])
     model = agent.get("model", "default")
 
+    if not prompt_positional and not prompt_flag:
+        return None
+
     cmd = [agent["cli"]]
-    cmd += extra_args
-    cmd += agent_args
-    if model != "default" and model_flag:
-        cmd += [model_flag, model]
-    elif model != "default" and not model_flag:
-        print(f"Warning: agent {agent['id']} has model={model!r} but model_flag is empty — model ignored", file=sys.stderr)
-    cmd += [prompt_flag, prompt]
+    if subcommand:
+        cmd += [subcommand]
+
+    if prompt_positional:
+        cmd += [prompt]
+        if model != "default" and model_flag:
+            cmd += [model_flag, model]
+        elif model != "default" and not model_flag:
+            print(f"Warning: agent {agent['id']} has model={model!r} but model_flag is empty — model ignored", file=sys.stderr)
+        cmd += extra_args
+        cmd += agent_args
+    else:
+        cmd += extra_args
+        cmd += agent_args
+        if model != "default" and model_flag:
+            cmd += [model_flag, model]
+        elif model != "default" and not model_flag:
+            print(f"Warning: agent {agent['id']} has model={model!r} but model_flag is empty — model ignored", file=sys.stderr)
+        cmd += [prompt_flag, prompt]
+
     return cmd
 
 
