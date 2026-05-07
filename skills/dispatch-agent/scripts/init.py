@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -57,8 +58,6 @@ def build_toml(data: dict) -> str:
         agents_by_tier[tier_id] = []
     for agent in data["agents"]:
         tier = agent["tier"]
-        if tier not in agents_by_tier:
-            agents_by_tier[tier] = []
         agents_by_tier[tier].append(agent)
 
     lines = ["version = 1", ""]
@@ -66,7 +65,7 @@ def build_toml(data: dict) -> str:
         lines.append("[[tiers]]")
         lines.append(f'id = {_toml_str(tier_id)}')
         lines.append("")
-        for agent in agents_by_tier.get(tier_id, []):
+        for agent in agents_by_tier[tier_id]:
             model = agent.get("model") or DEFAULT_MODELS.get(agent["cli"], "default")
             lines.append("  [[tiers.agents]]")
             lines.append(f'  id = {_toml_str(agent["id"])}')
@@ -128,7 +127,6 @@ def main():
 
     save_location = data.get("save_location", "user")
     if save_location == "project":
-        import subprocess
         result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
         project_root = result.stdout.strip() if result.returncode == 0 else os.getcwd()
         dest = os.path.join(project_root, ".config", "dispatch-agent.toml")

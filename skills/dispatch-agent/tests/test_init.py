@@ -1,9 +1,10 @@
+import io
 import json
 import sys
-import os
 import tomllib
 import unittest
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -113,11 +114,9 @@ class TestWriteConfig(unittest.TestCase):
                 parsed = tomllib.load(f)
             self.assertEqual(parsed["version"], 1)
 
-    def test_prints_path_to_stdout(self, capsys=None):
+    def test_prints_path_to_stdout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = Path(tmpdir) / "dispatch-agent.toml"
-            import io
-            from contextlib import redirect_stdout
             buf = io.StringIO()
             with redirect_stdout(buf):
                 init_mod.write_config(VALID_INPUT, str(dest))
