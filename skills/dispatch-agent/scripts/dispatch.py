@@ -333,9 +333,10 @@ def _cmd_dispatch(config: dict, templates: dict, prompt: str, args, depth: int) 
         if agent is None:
             print(f"Error: agent id {args.agent!r} not found in config", file=sys.stderr)
             sys.exit(1)
-        tmpl = templates.get(agent["cli"])
+        tmpl_key = agent.get("template", agent["cli"])
+        tmpl = templates.get(tmpl_key)
         if tmpl is None:
-            print(f"Error: CLI {agent['cli']!r} not in cli-templates.toml", file=sys.stderr)
+            print(f"Error: CLI {tmpl_key!r} not in cli-templates.toml", file=sys.stderr)
             sys.exit(1)
         cmd = build_command(agent, tmpl, prompt)
         if cmd is None:
@@ -381,9 +382,10 @@ def _cmd_dispatch(config: dict, templates: dict, prompt: str, args, depth: int) 
 
         for i in range(n):
             agent = agents[(start + i) % n]
-            tmpl = templates.get(agent["cli"])
+            tmpl_key = agent.get("template", agent["cli"])
+            tmpl = templates.get(tmpl_key)
             if tmpl is None:
-                print(f"Warning: CLI {agent['cli']!r} not in cli-templates.toml, skipping", file=sys.stderr)
+                print(f"Warning: CLI {tmpl_key!r} not in cli-templates.toml, skipping", file=sys.stderr)
                 failures.append((agent["id"], "skip: no template", ""))
                 continue
             cmd = build_command(agent, tmpl, prompt)
