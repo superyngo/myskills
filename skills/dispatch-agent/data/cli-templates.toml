@@ -1,0 +1,35 @@
+[claude]
+prompt_flag = "-p"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = "--version"
+extra_args = []
+
+[gemini]
+prompt_flag = "-p"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = "--version"
+extra_args = []
+
+[codex]
+prompt_flag = "-q"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = "--version"
+extra_args = []
+
+[copilot]
+prompt_flag = "-p"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = "--version"
+extra_args = []
+
+[opencode]
+prompt_flag = ""
+model_flag = ""
+file_input_mode = "arg"
+version_flag = "--version"
+verified = false
+extra_args = []
