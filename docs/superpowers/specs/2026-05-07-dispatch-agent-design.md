@@ -48,8 +48,18 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 **Instruction prose (core routing logic):**
 1. Find config (priority: `--config` > `<project>/.config/dispatch-agent.toml` > `~/.config/dispatch-agent.toml`). Project root = git root; fallback to cwd if not in a git repo.
 2. If no config found, or argument is `init`: load `references/init-guide.md` and run init flow
-3. Otherwise: `python3 scripts/dispatch.py [args]`
+3. Otherwise: translate skill arguments to dispatch.py flags and run:
+   - `-p <prompt>` → `python3 scripts/dispatch.py -p "<prompt>"`
+   - `-f <file>` → `python3 scripts/dispatch.py -f "<file>"`
+   - `--timeout N` → append `--timeout N`
+   - `--tier ID` → append `--tier ID`
+   - `--cli ID` → append `--cli ID`
+   - `--config PATH` → append `--config PATH`
+   - `--dry-run`, `--list`, `--show-config`, `--verbose` → pass through as-is
+   - If no prompt flag provided: ask user for prompt via `AskUserQuestion` before dispatching
 4. For `--help` or errors: load `references/dispatch-guide.md`
+
+**Recursion guard:** if env var `DISPATCH_AGENT_DEPTH` is set and >= 5, exit with error "dispatch recursion limit reached". dispatch.py sets `DISPATCH_AGENT_DEPTH = current + 1` before each subprocess call.
 
 ---
 
@@ -170,8 +180,8 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **Flags:**
 - `-p` / `-f`: mutually exclusive prompt input
-  - `-f FILE`: read file; if not found → stderr error, exit 1; if size > 256KB → stderr warning (continue); contents passed via `prompt_flag`
-- `--timeout N`: total wall-clock seconds; `-1` = no timeout (default); `0` → exit with error
+  - `-f FILE`: read file; if not found → stderr error, exit 1; if size > 256KB → stderr error, exit 1 (ARG_MAX risk); contents passed via `prompt_flag`
+- `--timeout N`: per-agent wall-clock seconds (each attempt gets N seconds independently); `-1` = no timeout (default); `0` → exit with error
 - `--tier ID` / `--cli ID`: mutually exclusive; `--cli` bypasses tier logic; multiple id matches → first + stderr warning
 - `--dry-run`: print exact subprocess args without executing
 - `--list`: with config → agents + availability; without config → detect-only (runs detect.py)
@@ -180,50 +190,57 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **subprocess safety:** `shell=False`, args as Python list always.
 
-**Streaming:** `subprocess.Popen` with line-by-line stdout read.
+**Streaming:** `subprocess.Popen` with `start_new_session=True` (creates new process group). Line-by-line stdout read; subprocess stderr forwarded to dispatch.py stderr in real time. On failure, captured stderr is included in the per-agent failure summary.
 
-**Timeout implementation:** `threading.Timer(N, process.kill)` started after `Popen`. On fire, process is killed; any in-flight stdout is discarded; treated as failure.
+**Timeout implementation:** `threading.Timer(N, lambda: os.killpg(os.getpgid(process.pid), signal.SIGKILL))` started after `Popen`. Kills entire process group (prevents orphan children). Any in-flight stdout is discarded; treated as failure.
+
+**Verbose wait status:** separate background thread prints `[waiting: agent-id — Xs elapsed]` every 10s to stderr. Thread is stopped when agent completes.
+
+**Recursion guard:** read `DISPATCH_AGENT_DEPTH` from env (default 0); if >= 5, exit 1. Set `DISPATCH_AGENT_DEPTH = current + 1` in subprocess env before each call.
 
 **Exit code:** propagate subprocess exit code on success. Exit 1 on all-tiers-exhausted. Exit code 0 = success (no stdout content inspection).
 
-**Signal handling:** `SIGINT` and `SIGTERM` → kill subprocess, exit cleanly. rr-state NOT written.
+**Signal handling:** `SIGINT` and `SIGTERM` → `os.killpg` on subprocess group, exit cleanly. rr-state NOT written.
 
 **Stderr on success:** always print `[agent-id] (tier: tier-id)` to stderr.
 
 **Round-robin algorithm:**
 ```python
 load rr_state (fcntl.flock LOCK_EX)
+validate config: env.type must be "file"|"env"; exit 1 on invalid
 
 for tier in tiers:
     agents = tier.agents
+    next_id = rr_state.get(tier.id)
+    start = index_of(next_id, agents) if next_id in agents else 0
     n = len(agents)
-    idx = rr_state.get(tier.id, 0)
-    if idx >= n: idx = 0   # reset on agent count change
-    start = idx
 
     for i in range(n):
         agent = agents[(start + i) % n]
+        if agent's cli not in cli-templates: skip, warn, continue
         if agent has prompt_flag == "": skip, warn, continue
-        result = call_agent(agent, prompt)  # Popen + threading.Timer
+        if -f used and prompt_flag == "": skip, warn, continue
+        set subprocess env: DISPATCH_AGENT_DEPTH = current_depth + 1
+        result = call_agent(agent, prompt)  # Popen(start_new_session=True) + threading.Timer(killpg)
         if result.success:
-            rr_state[tier.id] = (start + i + 1) % n
+            rr_state[tier.id] = agents[(start + i + 1) % n].id
             write rr_state atomically (os.replace), release flock
             return result
         else:
-            record failure(agent.id, exit_code or "timeout")
-    # tier exhausted — do NOT advance index
+            record failure(agent.id, exit_code or "timeout", stderr_snippet)
+    # tier exhausted — do NOT advance rr pointer
 
 release flock
-print failure summary to stderr
+print failure summary (per-agent: id, reason, stderr snippet) to stderr
 exit 1
 ```
 
 **rr-state:** `~/.cache/dispatch-agent/rr-state.json` — created by dispatch.py on first use; permissions `0600`.
 
 ```json
-{ "primary": 2, "fallback": 0 }
+{ "primary": "gemini-default", "fallback": "copilot-sonnet" }
 ```
-Simple map of tier-id → current index. Index >= len(agents) → reset to 0 at load time.
+Map of tier-id → **next agent id to call**. On load: find the stored id in current agent list → start from that index. If id not found (agent removed/renamed) → start from index 0.
 
 **Atomic write:** `fcntl.flock(LOCK_EX)` + `os.replace()`.
 
@@ -254,12 +271,12 @@ TIER fallback
   [✗] copilot-sonnet   cli=copilot  model=sonnet-4.6  (not found)
 ```
 
-**--list output (no config — detect-only):**
+**--list output (no config — detect-only, different purpose from config mode):**
 ```
-[no config — system CLIs detected]
+[SYSTEM CLIs — no config loaded, run 'init' to configure]
   [✓] claude    /usr/local/bin/claude   v1.2.3
   [✓] gemini    /usr/local/bin/gemini   v0.9.0
-  [!] opencode  /usr/local/bin/opencode  (verified=false — will be skipped at dispatch)
+  [!] opencode  /usr/local/bin/opencode  v0.5.0  (verified=false — will be skipped at dispatch)
   [✗] codex     (not found)
 ```
 
@@ -272,6 +289,9 @@ TIER fallback
 | `--timeout 0` | stderr: "use -1 for no timeout", exit 1 |
 | `--cli` + `--tier` combined | stderr error, exit 1 |
 | `-f FILE` not found | stderr error, exit 1 |
+| `-f FILE` size > 256KB | stderr error, exit 1 (ARG_MAX risk) |
+| `DISPATCH_AGENT_DEPTH` >= 5 | stderr error, exit 1 |
+| `env.type` invalid value | stderr error, exit 1 at startup |
 | `prompt_flag = ""` for agent | skip agent, stderr warning |
 | `-f FILE` + `prompt_flag = ""` | skip agent, stderr warning |
 | `cli` in config not found in cli-templates.toml | skip agent, stderr warning |
@@ -310,9 +330,12 @@ echo '<json>' | python3 init.py
 ```
 
 **TOML serializer:** hand-written minimal serializer covering only the defined schema. No string template.
-- Validates `agent.id` against `[a-zA-Z0-9_-]`; raises error on invalid chars
-- Validates global uniqueness of all `agent.id` values; raises error on duplicates
+- Validates `agent.id` against `[a-zA-Z0-9_-]`; exits with stderr error on invalid chars
+- Validates global uniqueness of all `agent.id` values; exits with stderr error on duplicates
 - String escaping for all TOML string values: `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`
+- On any validation error: exit 1, plain text stderr message
+
+**Model defaults:** if user does not specify a model for an agent during init, apply the Default Platforms table value for that CLI. If CLI not in the table, leave model field as `"default"`.
 
 **--input JSON schema:**
 ```json
@@ -338,14 +361,40 @@ echo '<json>' | python3 init.py
 
 **AI-guided flow (detailed in references/init-guide.md):**
 1. AI runs `python3 scripts/detect.py` → shows callable CLIs
-   - Explicitly informs user: CLIs with `verified: false` (e.g. opencode) will be skipped at dispatch even if configured
+   - Explicitly tells user: CLIs with `verified: false` will be skipped at dispatch even if configured
 2. AI asks via `AskUserQuestion` one at a time:
-   - If existing config: overwrite or backup?
-   - For each callable (and verified) CLI: custom id? extra args? env vars?
+   - If existing config found: overwrite or backup?
+   - For each callable + verified CLI: custom id? extra args? env vars? (pre-fill model from Default Platforms table)
    - Tier assignment and order
    - Save location: project or user
 3. AI pipes JSON to `python3 scripts/init.py`
-4. Script writes TOML, AI confirms path and permissions to user
+4. If init.py exits non-0: AI shows stderr error and offers to retry
+5. On success: AI confirms path + permissions to user
+
+---
+
+## references/ File Outlines
+
+### references/init-guide.md sections
+1. **Prerequisites** — ensure detect.py is runnable; check Python 3.11+
+2. **Step 1: Detect CLIs** — run detect.py, interpret output, explain verified/unverified distinction to user
+3. **Step 2: Existing config handling** — check for existing config; AskUserQuestion for overwrite vs backup
+4. **Step 3: Per-CLI configuration** — for each callable+verified CLI: id, model (pre-fill default), args, env vars
+5. **Step 4: Tier assignment** — AskUserQuestion for tier names and which agents go in which tier + order
+6. **Step 5: Save location** — AskUserQuestion for project vs user
+7. **Step 6: Write config** — build JSON, pipe to init.py, handle errors
+8. **Edge cases** — no CLIs detected; all CLIs unverified; duplicate tier names; env file not found
+
+### references/dispatch-guide.md sections
+1. **Quick reference** — flag summary table
+2. **Config schema** — full TOML schema with field descriptions and examples
+3. **cli-templates.toml format** — field descriptions, how to add a new CLI
+4. **env var types** — `file` and `env` semantics with examples
+5. **Tier fallback logic** — how tiers and round-robin work together
+6. **rr-state** — file location, format, reset conditions
+7. **Output formats** — `--dry-run`, `--list`, `--show-config`, `--verbose` with examples
+8. **Error reference** — all error messages and their meanings
+9. **Recursion guard** — DISPATCH_AGENT_DEPTH explanation
 
 ---
 
