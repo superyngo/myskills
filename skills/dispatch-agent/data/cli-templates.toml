@@ -27,9 +27,18 @@ version_flag = "--version"
 extra_args = []
 
 [opencode]
-prompt_flag = ""
-model_flag = ""
+subcommand = "run"
+prompt_positional = true
+model_flag = "--model"
 file_input_mode = "arg"
 version_flag = "--version"
-verified = false
+verified = true
 extra_args = []
+
+[gemini-npx]
+detect_binary = "npx"
+prompt_flag = "-p"
+model_flag = "--model"
+file_input_mode = "arg"
+version_flag = ""
+extra_args = ["@google/gemini-cli@latest", "--skip-trust"]
