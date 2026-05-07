@@ -2,7 +2,6 @@
 """Dispatch tasks to agent CLIs with tier-based fallback and round-robin."""
 import argparse
 import fcntl
-import io
 import json
 import os
 import select
@@ -164,15 +163,15 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def _find_agent_by_id(tiers: list, agent_id: str) -> dict | None:
-    found = None
-    for tier in tiers:
-        for agent in tier.get("agents", []):
-            if agent["id"] == agent_id:
-                if found is not None:
-                    print(f"Warning: multiple agents with id {agent_id!r}, using first", file=sys.stderr)
-                    return found
-                found = agent
-    return found
+    matches = [
+        agent
+        for tier in tiers
+        for agent in tier.get("agents", [])
+        if agent["id"] == agent_id
+    ]
+    if len(matches) > 1:
+        print(f"Warning: multiple agents with id {agent_id!r}, using first", file=sys.stderr)
+    return matches[0] if matches else None
 
 
 def call_agent_with_result(agent_id: str, tier_id: str | None, cmd: list, env: dict,
@@ -196,7 +195,11 @@ def call_agent_with_result(agent_id: str, tier_id: str | None, cmd: list, env: d
             pass
 
     def _handle_signal(signum, frame):
-        _kill()
+        try:
+            os.killpg(os.getpgid(proc.pid), signum)
+        except ProcessLookupError:
+            pass
+        killed.set()
         sys.exit(1)
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -285,7 +288,7 @@ def _cmd_list(config: dict, templates: dict) -> None:
             print(f"  [{marker}] {agent['id']}   cli={cli}   model={agent.get('model','default')}    {loc}")
 
 
-def _cmd_list_detect(templates: dict) -> None:
+def _cmd_list_detect() -> None:
     detect_path = Path(__file__).parent / "detect.py"
     result = subprocess.run(
         [sys.executable, str(detect_path)],
@@ -397,8 +400,8 @@ def _cmd_dispatch(config: dict, templates: dict, prompt: str, args, depth: int) 
                 except Exception:
                     rr_state = {}
                 rr_state[tier["id"]] = next_agent_id
-                fcntl.flock(rr_fd, fcntl.LOCK_UN)
                 write_rr_state(rr_state)
+                fcntl.flock(rr_fd, fcntl.LOCK_UN)
                 rr_fd.close()
                 sys.exit(0)
             else:
@@ -434,7 +437,7 @@ def main():
         if cfg_path:
             _cmd_list(load_config(cfg_path), templates)
         else:
-            _cmd_list_detect(templates)
+            _cmd_list_detect()
         return
 
     cfg_path = find_config(args.config)
