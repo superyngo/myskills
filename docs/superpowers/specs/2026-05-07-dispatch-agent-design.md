@@ -104,6 +104,11 @@ id = "fallback"
   name = "GITHUB_TOKEN"
   type = "file"
   path = "~/.config/gh/token"
+
+  [[tiers.agents.env]]
+  name = "OPENAI_KEY"
+  type = "env"
+  var = "OPENAI_KEY"          # forward from current process environment
 ```
 
 **Key rules:**
@@ -189,6 +194,8 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 - `--show-config`: print config (see output format below), then exit
 - `--verbose`: print per-agent attempt and periodic wait status (every 10s) to stderr
 
+**argparse setup:** `-p` and `-f` defined as `add_mutually_exclusive_group(required=False)`; `--agent` and `--tier` as a second mutually exclusive group. If neither `-p` nor `-f` is given and not `--list`/`--show-config`/`--dry-run`: AI prompts user for input before calling dispatch.py.
+
 **subprocess safety:** `shell=False`, args as Python list always.
 
 **Streaming:** `subprocess.Popen` with `start_new_session=True` (creates new process group). Subprocess **stdout forwarded in real time to dispatch.py stdout** (caller receives output as it arrives). Use `select` + non-blocking read loop to avoid blocking on `readline()`; this also handles clean pipe state after SIGKILL. Subprocess stderr captured in memory during run; forwarded to dispatch.py stderr on failure only (included in failure summary).
@@ -201,7 +208,7 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **Exit code:** propagate subprocess exit code on success. Exit 1 on all-tiers-exhausted. Exit code 0 = success (no stdout content inspection).
 
-**Signal handling:** `SIGINT` and `SIGTERM` → `os.killpg` on subprocess group, exit cleanly. rr-state NOT written.
+**Signal handling:** `SIGINT` and `SIGTERM` → `os.killpg(pgid, SIGKILL)` on subprocess group, then exit cleanly. rr-state NOT written on interrupt. After SIGKILL, the stdout pipe will be closed by the OS; the `select` loop exits naturally when EOF is detected — no output is lost from already-flushed data, but buffered-but-unsent subprocess output is discarded. dispatch.py itself being killed externally (e.g. `kill -9`) cannot be handled; this is expected behavior.
 
 **Stderr on success:** always print `[agent-id] (tier: tier-id)` to stderr.
 
@@ -225,8 +232,7 @@ for tier in tiers:
         agent = agents[(start + i) % n]
         template = cli_templates.get(agent.cli)
         if template is None: warn, continue
-        if template.prompt_flag == "": warn, continue
-        if -f used and template.prompt_flag == "": warn, continue
+        if template.prompt_flag == "": warn, continue  # covers both -p and -f cases; redundant -f check removed
 
         # resolve env vars (at dispatch time)
         env = os.environ.copy()
@@ -309,7 +315,7 @@ TIER fallback
 |----------|----------|
 | TOML parse failure | stderr error, exit 1 |
 | `--timeout 0` | stderr: "use -1 for no timeout", exit 1 |
-| `--cli` + `--tier` combined | stderr error, exit 1 |
+| `--agent` + `--tier` combined | stderr error, exit 1 |
 | `-f FILE` not found | stderr error, exit 1 |
 | `-f FILE` size > 256KB | stderr error, exit 1 (ARG_MAX risk) |
 | `DISPATCH_AGENT_DEPTH` >= 5 | stderr error, exit 1 |
@@ -337,7 +343,7 @@ TIER fallback
 ```
 
 **Strategy per CLI:**
-1. `shutil.which(cli)` → path; if None, `callable: false`, stop
+1. `shutil.which(cli)` → path; if None, `callable: false`, stop. Also check `os.access(path, os.X_OK)`; if not executable, `callable: false`.
 2. Read `version_flag` from `data/cli-templates.toml`:
    - If file missing → skip version detection for all CLIs, `version: null`
    - If CLI entry missing in templates → `version: null`
@@ -361,6 +367,7 @@ echo '<json>' | python3 init.py
 - String escaping for all TOML string values: `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`
 - **Round-trip validation:** after writing, read back with `tomllib.loads()` and compare; if parse fails, delete file, stderr error, exit 1
 - On any validation error: exit 1, plain text stderr message
+- **On success:** print written config path to stdout (e.g. `/home/user/.config/dispatch-agent.toml`); AI reads this to confirm location
 - To reset rr-state: delete `~/.cache/dispatch-agent/rr-state.json` manually
 
 **Model defaults:** if user does not specify a model for an agent during init, apply the Default Platforms table value for that CLI. If CLI not in the table, leave model field as `"default"`.
@@ -439,7 +446,7 @@ echo '<json>' | python3 init.py
 9. `python3 scripts/dispatch.py -p "say hi" --verbose` → per-attempt logs on stderr
 10. Disable tier-1 CLIs → tier-2 fallback triggered
 11. Disable all CLIs → stderr failure summary, exit 1
-12. `--cli claude-default` → bypasses tier logic
+12. `--agent claude-default` → bypasses tier logic
 13. Two concurrent dispatch calls → rr-state index consistent (no corruption)
 14. Run `init` on existing config → backup/overwrite prompt honored
 
