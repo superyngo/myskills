@@ -40,7 +40,7 @@ skills/dispatch-agent/
 ---
 name: dispatch-agent
 description: Dispatch tasks to other agent CLIs with tier-based fallback
-argument-hint: "[init | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--cli ID] [--config PATH] [--dry-run] [--list] [--show-config] [--verbose]"
+argument-hint: "[init | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--agent ID] [--config PATH] [--dry-run] [--list] [--show-config] [--verbose]"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 ```
@@ -53,7 +53,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
    - `-f <file>` → `python3 scripts/dispatch.py -f "<file>"`
    - `--timeout N` → append `--timeout N`
    - `--tier ID` → append `--tier ID`
-   - `--cli ID` → append `--cli ID`
+   - `--agent ID` → append `--agent ID`
    - `--config PATH` → append `--config PATH`
    - `--dry-run`, `--list`, `--show-config`, `--verbose` → pass through as-is
    - If no prompt flag provided: ask user for prompt via `AskUserQuestion` before dispatching
@@ -174,7 +174,7 @@ extra_args = []
 
 **Interface:**
 ```bash
-python3 dispatch.py -p "prompt text" [--timeout 30] [--tier primary] [--cli claude-default] [--config path] [--dry-run] [--list] [--show-config] [--verbose]
+python3 dispatch.py -p "prompt text" [--timeout 30] [--tier primary] [--agent claude-default] [--config path] [--dry-run] [--list] [--show-config] [--verbose]
 python3 dispatch.py -f prompt.txt    [--timeout -1]
 ```
 
@@ -182,7 +182,8 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 - `-p` / `-f`: mutually exclusive prompt input
   - `-f FILE`: read file; if not found → stderr error, exit 1; if size > 256KB → stderr error, exit 1 (ARG_MAX risk); contents passed via `prompt_flag`
 - `--timeout N`: per-agent wall-clock seconds (each attempt gets N seconds independently); `-1` = no timeout (default); `0` → exit with error
-- `--tier ID` / `--cli ID`: mutually exclusive; `--cli` bypasses tier logic; multiple id matches → first + stderr warning
+- `--tier ID` / `--agent ID`: mutually exclusive; `--agent` accepts `agent.id` (e.g. `claude-default`), bypasses tier logic; multiple id matches → first + stderr warning
+- `--help`: handled by argparse within dispatch.py; does not route to AI
 - `--dry-run`: print exact subprocess args without executing
 - `--list`: with config → agents + availability; without config → detect-only (runs detect.py)
 - `--show-config`: print config (see output format below), then exit
@@ -190,9 +191,9 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **subprocess safety:** `shell=False`, args as Python list always.
 
-**Streaming:** `subprocess.Popen` with `start_new_session=True` (creates new process group). Line-by-line stdout read; subprocess stderr forwarded to dispatch.py stderr in real time. On failure, captured stderr is included in the per-agent failure summary.
+**Streaming:** `subprocess.Popen` with `start_new_session=True` (creates new process group). Subprocess **stdout forwarded in real time to dispatch.py stdout** (caller receives output as it arrives). Use `select` + non-blocking read loop to avoid blocking on `readline()`; this also handles clean pipe state after SIGKILL. Subprocess stderr captured in memory during run; forwarded to dispatch.py stderr on failure only (included in failure summary).
 
-**Timeout implementation:** `threading.Timer(N, lambda: os.killpg(os.getpgid(process.pid), signal.SIGKILL))` started after `Popen`. Kills entire process group (prevents orphan children). Any in-flight stdout is discarded; treated as failure.
+**Timeout implementation:** `threading.Timer(N, lambda: os.killpg(os.getpgid(process.pid), signal.SIGKILL))` started after `Popen`. Kills entire process group (prevents orphan children). `select` loop exits when pipe closes after kill. Any in-flight stdout is discarded; treated as failure.
 
 **Verbose wait status:** separate background thread prints `[waiting: agent-id — Xs elapsed]` every 10s to stderr. Thread is stopped when agent completes.
 
@@ -206,32 +207,53 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **Round-robin algorithm:**
 ```python
-load rr_state (fcntl.flock LOCK_EX)
-validate config: env.type must be "file"|"env"; exit 1 on invalid
+validate config: env.type must be "file"|"env" for all agents; exit 1 on invalid
+
+# Phase 1: read rr_state under lock, release immediately
+with fcntl.flock(rr_state_fd, LOCK_EX):
+    rr_state = load_rr_state()  # {} if file missing or unreadable
+
+failures = []
 
 for tier in tiers:
-    agents = tier.agents
+    agents = tier.agents            # list of agent dicts from config
     next_id = rr_state.get(tier.id)
-    start = index_of(next_id, agents) if next_id in agents else 0
+    start = index_of(next_id, agents) if next_id in [a.id for a in agents] else 0
     n = len(agents)
 
     for i in range(n):
         agent = agents[(start + i) % n]
-        if agent's cli not in cli-templates: skip, warn, continue
-        if agent has prompt_flag == "": skip, warn, continue
-        if -f used and prompt_flag == "": skip, warn, continue
-        set subprocess env: DISPATCH_AGENT_DEPTH = current_depth + 1
-        result = call_agent(agent, prompt)  # Popen(start_new_session=True) + threading.Timer(killpg)
+        template = cli_templates.get(agent.cli)
+        if template is None: warn, continue
+        if template.prompt_flag == "": warn, continue
+        if -f used and template.prompt_flag == "": warn, continue
+
+        # resolve env vars (at dispatch time)
+        env = os.environ.copy()
+        for ev in agent.env:
+            if ev.type == "file": env[ev.name] = open(expanduser(ev.path)).read().strip()
+            elif ev.type == "env": env[ev.name] = os.environ[ev.var]
+        env["DISPATCH_AGENT_DEPTH"] = str(current_depth + 1)
+
+        # call agent — lock is NOT held during this call
+        result = call_agent(agent, template, prompt, env)
+        # call_agent: Popen(start_new_session=True, shell=False)
+        #             + select loop for stdout forward + stderr capture
+        #             + threading.Timer(timeout, killpg) if timeout != -1
+
         if result.success:
-            rr_state[tier.id] = agents[(start + i + 1) % n].id
-            write rr_state atomically (os.replace), release flock
+            # Phase 2: write updated rr_state under lock
+            next_agent_id = agents[(start + i + 1) % n].id
+            with fcntl.flock(rr_state_fd, LOCK_EX):
+                rr_state = load_rr_state()  # re-read in case another process wrote
+                rr_state[tier.id] = next_agent_id
+                atomic_write(rr_state)
             return result
         else:
-            record failure(agent.id, exit_code or "timeout", stderr_snippet)
-    # tier exhausted — do NOT advance rr pointer
+            failures.append((agent.id, result.exit_code or "timeout", result.stderr_snippet))
+    # tier exhausted — do NOT update rr pointer
 
-release flock
-print failure summary (per-agent: id, reason, stderr snippet) to stderr
+print failure summary to stderr
 exit 1
 ```
 
@@ -316,7 +338,10 @@ TIER fallback
 
 **Strategy per CLI:**
 1. `shutil.which(cli)` → path; if None, `callable: false`, stop
-2. Read `version_flag` from `data/cli-templates.toml`; if `""`, skip → `version: null`
+2. Read `version_flag` from `data/cli-templates.toml`:
+   - If file missing → skip version detection for all CLIs, `version: null`
+   - If CLI entry missing in templates → `version: null`
+   - If `version_flag = ""` → `version: null`
 3. Run `<cli> <version_flag>` with 5s timeout; on failure (non-0 exit, timeout, exception) → `version: null`
 4. Copy `verified` from template (default `true` if absent)
 
@@ -332,8 +357,11 @@ echo '<json>' | python3 init.py
 **TOML serializer:** hand-written minimal serializer covering only the defined schema. No string template.
 - Validates `agent.id` against `[a-zA-Z0-9_-]`; exits with stderr error on invalid chars
 - Validates global uniqueness of all `agent.id` values; exits with stderr error on duplicates
+- `agent.args`: string array only; element type validated at serialize time
 - String escaping for all TOML string values: `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`
+- **Round-trip validation:** after writing, read back with `tomllib.loads()` and compare; if parse fails, delete file, stderr error, exit 1
 - On any validation error: exit 1, plain text stderr message
+- To reset rr-state: delete `~/.cache/dispatch-agent/rr-state.json` manually
 
 **Model defaults:** if user does not specify a model for an agent during init, apply the Default Platforms table value for that CLI. If CLI not in the table, leave model field as `"default"`.
 
