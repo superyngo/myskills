@@ -20,7 +20,7 @@ python3 scripts/detect.py
 ```
 
 Display results to user. **Important:** explicitly tell the user:
-> "CLIs marked `verified: false` (e.g. opencode) will be skipped at dispatch even if added to config, because their non-interactive mode is unverified."
+> "CLIs marked `verified: false` will be skipped at dispatch even if added to config, because their non-interactive mode is unverified."
 
 ---
 
@@ -79,9 +79,14 @@ Pre-fill model using defaults:
 |-----|--------------|
 | claude | default |
 | gemini | default |
+| gemini-npx | default |
 | codex | default |
 | copilot | sonnet-4.6 |
-| opencode | glm-5.1 |
+| opencode | zai-coding-plan/glm-5.1 |
+
+> **Note:** `gemini-npx` uses `npx` as the underlying binary with `@google/gemini-cli@latest`.
+> Set `cli = "npx"` in your config when using this template. Agent args (e.g. `["--thinking"]`)
+> are appended after the model flag for `opencode`.
 
 ---
 
