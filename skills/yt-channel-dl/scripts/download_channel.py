@@ -97,7 +97,7 @@ def filter_pending(entries, downloaded_ids):
     return [e for e in entries if e.get("id") and e["id"] not in downloaded_ids]
 
 
-def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
+def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent, cookies_from_browser=None):
     """Build yt-dlp YoutubeDL options dict for a single video download."""
     opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best" if (not ffmpeg_path and fmt == "m4a") else "bestaudio/best",
@@ -108,6 +108,8 @@ def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
         "no_warnings": True,
         "remote_components": ["ejs:github"],
     }
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
     if rate_limit:
         opts["ratelimit"] = rate_limit
     if ffmpeg_path:
@@ -122,7 +124,7 @@ def build_ydl_opts(output_dir, fmt, ffmpeg_path, rate_limit, user_agent):
     return opts
 
 
-def fetch_video_list(channel_url):
+def fetch_video_list(channel_url, cookies_from_browser=None):
     """Fetch all video entries from channel URL without downloading.
 
     Returns list of dicts: [{"id": str, "title": str, "url": str}, ...]
@@ -133,6 +135,8 @@ def fetch_video_list(channel_url):
         "no_warnings": True,
         "remote_components": ["ejs:github"],
     }
+    if cookies_from_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(channel_url, download=False)
 
@@ -229,6 +233,8 @@ def main():
     parser.add_argument("--burst-sleep", type=float, default=45.0)
     parser.add_argument("--ffmpeg-path", default=None)
     parser.add_argument("--status-file", default=None)
+    parser.add_argument("--cookies-from-browser", default=None, dest="cookies_from_browser",
+                        help="Browser to extract cookies from (e.g. chrome, safari, firefox)")
     args = parser.parse_args()
 
     if args.burst < 1:
@@ -254,7 +260,7 @@ def main():
     write_status(sf, {"phase": "fetching", "started_at": started_at})
     print(f"Fetching video list from: {args.channel_url}")
     try:
-        entries = fetch_video_list(args.channel_url)
+        entries = fetch_video_list(args.channel_url, args.cookies_from_browser)
     except Exception as e:
         write_status(sf, {"phase": "error", "error": str(e), "started_at": started_at})
         print(f"ERROR: Failed to fetch video list: {e}", file=sys.stderr)
@@ -306,7 +312,7 @@ def main():
             "pending_count": len(pending), "started_at": started_at,
         })
 
-        opts = build_ydl_opts(args.output_dir, fmt, ffmpeg_path, rate_limit, ua)
+        opts = build_ydl_opts(args.output_dir, fmt, ffmpeg_path, rate_limit, ua, args.cookies_from_browser)
         opts["progress_hooks"] = [make_progress_hook(title)]
 
         try:
