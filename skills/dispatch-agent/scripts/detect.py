@@ -26,7 +26,6 @@ def check_cli(name: str, templates: dict) -> dict:
         return {"path": None, "version": None, "callable": False, "verified": True}
 
     tmpl = templates.get(name)
-    # If no template exists for this CLI, we can't safely determine version or verified status
     if tmpl is None:
         return {"path": path, "version": None, "callable": True, "verified": True}
 
@@ -44,7 +43,7 @@ def check_cli(name: str, templates: dict) -> dict:
             )
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().splitlines()[0]
-        except Exception:
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
     return {"path": path, "version": version, "callable": True, "verified": verified}

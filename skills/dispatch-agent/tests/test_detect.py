@@ -1,21 +1,11 @@
 import json
 import sys
-import os
 import unittest
-import tempfile
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 # Add scripts dir to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-
-# Mock tomllib for Python < 3.11
-try:
-    import tomllib
-except ImportError:
-    import sys
-    from unittest.mock import MagicMock
-    sys.modules['tomllib'] = MagicMock()
 
 import detect
 
@@ -94,12 +84,15 @@ class TestDetectCli(unittest.TestCase):
         self.assertFalse(result["verified"])
 
     @patch("detect.shutil.which")
-    def test_missing_templates_file_returns_null_versions(self, mock_which):
-        mock_which.return_value = None  # CLI not found
+    @patch("detect.os.access")
+    def test_no_template_returns_callable_with_null_version(self, mock_access, mock_which):
+        mock_which.return_value = "/usr/bin/claude"
+        mock_access.return_value = True
         result = detect.check_cli("claude", {})
-        # no template → version null, verified defaults to True
+        # no template → version null, callable true, verified defaults to True
         self.assertIsNone(result.get("version"))
-        self.assertFalse(result["callable"])
+        self.assertTrue(result["callable"])
+        self.assertTrue(result["verified"])
 
 
 class TestLoadTemplates(unittest.TestCase):
