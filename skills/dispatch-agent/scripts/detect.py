@@ -8,7 +8,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-KNOWN_CLIS = ["claude", "gemini", "codex", "copilot", "opencode"]
+KNOWN_CLIS = ["claude", "gemini", "gemini-npx", "codex", "copilot", "opencode"]
 TEMPLATES_PATH = Path(__file__).parent.parent / "data" / "cli-templates.toml"
 
 
@@ -21,11 +21,13 @@ def load_templates() -> dict:
 
 
 def check_cli(name: str, templates: dict) -> dict:
-    path = shutil.which(name)
+    tmpl = templates.get(name)
+    detect_binary = tmpl.get("detect_binary", name) if tmpl else name
+
+    path = shutil.which(detect_binary)
     if path is None or not os.access(path, os.X_OK):
         return {"path": None, "version": None, "callable": False, "verified": True}
 
-    tmpl = templates.get(name)
     if tmpl is None:
         return {"path": path, "version": None, "callable": True, "verified": True}
 
@@ -36,7 +38,7 @@ def check_cli(name: str, templates: dict) -> dict:
     if version_flag:
         try:
             result = subprocess.run(
-                [name, version_flag],
+                [detect_binary, version_flag],
                 capture_output=True,
                 text=True,
                 timeout=5,

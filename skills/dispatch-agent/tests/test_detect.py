@@ -14,8 +14,11 @@ class TestDetectCli(unittest.TestCase):
     def setUp(self):
         self.templates = {
             "claude": {"version_flag": "--version", "verified": True},
-            "opencode": {"version_flag": "--version", "verified": False},
+            "opencode": {"version_flag": "--version", "verified": True,
+                         "subcommand": "run", "prompt_positional": True},
             "nodecli": {"version_flag": "", "verified": True},
+            "gemini-npx": {"detect_binary": "npx", "version_flag": "", "verified": True,
+                            "extra_args": ["@google/gemini-cli@latest", "--skip-trust"]},
         }
 
     @patch("detect.shutil.which")
@@ -77,10 +80,11 @@ class TestDetectCli(unittest.TestCase):
     @patch("detect.os.access")
     @patch("detect.subprocess.run")
     def test_verified_false_copied_from_template(self, mock_run, mock_access, mock_which):
-        mock_which.return_value = "/usr/bin/opencode"
+        mock_which.return_value = "/usr/bin/somecli"
         mock_access.return_value = True
-        mock_run.return_value = MagicMock(returncode=0, stdout="opencode 0.5\n")
-        result = detect.check_cli("opencode", self.templates)
+        mock_run.return_value = MagicMock(returncode=0, stdout="somecli 0.5\n")
+        templates_with_unverified = {"somecli": {"version_flag": "--version", "verified": False}}
+        result = detect.check_cli("somecli", templates_with_unverified)
         self.assertFalse(result["verified"])
 
     @patch("detect.shutil.which")
@@ -92,6 +96,34 @@ class TestDetectCli(unittest.TestCase):
         # no template → version null, callable true, verified defaults to True
         self.assertIsNone(result.get("version"))
         self.assertTrue(result["callable"])
+        self.assertTrue(result["verified"])
+
+    @patch("detect.shutil.which")
+    @patch("detect.os.access")
+    def test_gemini_npx_detected_via_npx_binary(self, mock_access, mock_which):
+        """gemini-npx is callable when 'npx' binary is available."""
+        mock_which.return_value = "/usr/local/bin/npx"
+        mock_access.return_value = True
+        result = detect.check_cli("gemini-npx", self.templates)
+        mock_which.assert_called_with("npx")
+        self.assertTrue(result["callable"])
+        self.assertEqual(result["path"], "/usr/local/bin/npx")
+
+    @patch("detect.shutil.which")
+    def test_gemini_npx_not_callable_when_npx_missing(self, mock_which):
+        """gemini-npx is not callable when 'npx' is absent."""
+        mock_which.return_value = None
+        result = detect.check_cli("gemini-npx", self.templates)
+        mock_which.assert_called_with("npx")
+        self.assertFalse(result["callable"])
+
+    @patch("detect.shutil.which")
+    @patch("detect.os.access")
+    def test_opencode_now_verified(self, mock_access, mock_which):
+        """opencode template has verified=True in the updated templates."""
+        mock_which.return_value = "/usr/bin/opencode"
+        mock_access.return_value = True
+        result = detect.check_cli("opencode", self.templates)
         self.assertTrue(result["verified"])
 
 
