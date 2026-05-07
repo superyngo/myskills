@@ -40,7 +40,7 @@ skills/dispatch-agent/
 ---
 name: dispatch-agent
 description: Dispatch tasks to other agent CLIs with tier-based fallback
-argument-hint: "[init | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--cli ID] [--dry-run] [--list] [--show-config] [--verbose]"
+argument-hint: "[init | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--cli ID] [--config PATH] [--dry-run] [--list] [--show-config] [--verbose]"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 ```
@@ -170,7 +170,7 @@ python3 dispatch.py -f prompt.txt    [--timeout -1]
 
 **Flags:**
 - `-p` / `-f`: mutually exclusive prompt input
-  - `-f FILE`: read file; if not found → stderr error, exit 1; contents passed via `prompt_flag`
+  - `-f FILE`: read file; if not found → stderr error, exit 1; if size > 256KB → stderr warning (continue); contents passed via `prompt_flag`
 - `--timeout N`: total wall-clock seconds; `-1` = no timeout (default); `0` → exit with error
 - `--tier ID` / `--cli ID`: mutually exclusive; `--cli` bypasses tier logic; multiple id matches → first + stderr warning
 - `--dry-run`: print exact subprocess args without executing
@@ -273,6 +273,8 @@ TIER fallback
 | `--cli` + `--tier` combined | stderr error, exit 1 |
 | `-f FILE` not found | stderr error, exit 1 |
 | `prompt_flag = ""` for agent | skip agent, stderr warning |
+| `-f FILE` + `prompt_flag = ""` | skip agent, stderr warning |
+| `cli` in config not found in cli-templates.toml | skip agent, stderr warning |
 | `model_flag = ""` + model != "default" | skip model flag, stderr warning |
 | CLI binary not found on system | skip agent, stderr warning |
 | env file not found | skip env var, stderr warning, continue |
@@ -307,7 +309,10 @@ TIER fallback
 echo '<json>' | python3 init.py
 ```
 
-**TOML serializer:** hand-written minimal serializer covering only the defined schema. No string template. Validates `agent.id` against `[a-zA-Z0-9_-]`; raises error on invalid chars.
+**TOML serializer:** hand-written minimal serializer covering only the defined schema. No string template.
+- Validates `agent.id` against `[a-zA-Z0-9_-]`; raises error on invalid chars
+- Validates global uniqueness of all `agent.id` values; raises error on duplicates
+- String escaping for all TOML string values: `\` → `\\`, `"` → `\"`, newline → `\n`, tab → `\t`
 
 **--input JSON schema:**
 ```json
