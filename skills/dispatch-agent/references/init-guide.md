@@ -66,13 +66,16 @@ Options:
   - "No env vars needed"
   - "Add env var from file (type=file)"
   - "Forward env var from shell (type=env)"
+  - "Source env file (type=source)"
 ```
 
 If user adds env var, collect:
-- `name`: the env var name (e.g. GITHUB_TOKEN)
-- `type`: file or env
-- `path` (if file): path to token file
+- `name`: the env var name (e.g. GITHUB_TOKEN) — **not required for type=source**
+- `type`: file, env, or source
+- `path` (if file or source): path to file
 - `var` (if env): name of the source env var
+
+> **`type=source`**: the file is a shell env file (e.g. `~/.zshrc.d/zclaude.env`) containing `KEY=VALUE` pairs. At dispatch time, it is loaded via `set -a; source <file>; set +a` inside a bash subshell — no individual var name is needed and the file is never parsed in Python.
 
 Pre-fill model using defaults:
 | CLI | Default model |
@@ -144,3 +147,4 @@ On success: init.py prints the config path — confirm to user with permissions 
 - **All CLIs unverified:** same as above — no agents can be configured.
 - **Duplicate agent ids:** validate before calling init.py; prompt user to choose a different id.
 - **env file not found during init:** warn user but allow proceeding — dispatch.py will skip the var at runtime.
+- **source env file not found at dispatch:** a warning is printed and that source file is skipped; other env entries still apply.

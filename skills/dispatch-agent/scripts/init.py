@@ -75,11 +75,14 @@ def build_toml(data: dict) -> str:
             for ev in agent.get("env", []):
                 lines.append("")
                 lines.append("  [[tiers.agents.env]]")
-                lines.append(f'  name = {_toml_str(ev["name"])}')
                 lines.append(f'  type = {_toml_str(ev["type"])}')
-                if ev["type"] == "file":
+                if ev["type"] == "source":
+                    lines.append(f'  path = {_toml_str(ev["path"])}')
+                elif ev["type"] == "file":
+                    lines.append(f'  name = {_toml_str(ev["name"])}')
                     lines.append(f'  path = {_toml_str(ev["path"])}')
                 elif ev["type"] == "env":
+                    lines.append(f'  name = {_toml_str(ev["name"])}')
                     lines.append(f'  var = {_toml_str(ev["var"])}')
             lines.append("")
 

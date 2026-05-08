@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-05-08 — feat(dispatch-agent): add type=source env entries for shell env file sourcing
+
+- Added `type=source` as a valid env entry type in dispatch-agent config
+- At dispatch time, source files are loaded via `bash -c "set -a; source <file>; set +a; exec ..."` — no Python-side parsing needed
+- Updated `init-guide.md` to include the new "Source env file (type=source)" option
+- Updated `init.py` TOML serialization to omit `name` field for source entries
+- Updated `--show-config` display to label source entries correctly
+
 ### 2026-04-28 — feat(yt-channel-dl): background execution with status file
 
 - Added `--status-file` to `download_channel.py` — writes compact JSON progress at each video boundary

@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import select
+import shlex
 import signal
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ from pathlib import Path
 TEMPLATES_PATH = Path(__file__).parent.parent / "data" / "cli-templates.toml"
 RR_STATE_PATH = Path.home() / ".cache" / "dispatch-agent" / "rr-state.json"
 MAX_FILE_BYTES = 256 * 1024
-VALID_ENV_TYPES = {"file", "env"}
+VALID_ENV_TYPES = {"file", "env", "source"}
 
 
 def load_config(path: str) -> dict:
@@ -108,6 +109,8 @@ def build_command(agent: dict, template: dict, prompt: str) -> list | None:
 
 
 def resolve_env_var(ev: dict) -> tuple | None:
+    if ev["type"] == "source":
+        return None  # handled via shell sourcing in wrap_with_sources
     name = ev["name"]
     if ev["type"] == "env":
         val = os.environ.get(ev["var"])
@@ -122,6 +125,25 @@ def resolve_env_var(ev: dict) -> tuple | None:
         except OSError:
             print(f"Warning: env file {path!r} not found, skipping", file=sys.stderr)
             return None
+
+
+def get_source_files(agent: dict) -> list[str]:
+    files = []
+    for ev in agent.get("env", []):
+        if ev.get("type") == "source":
+            path = os.path.expanduser(ev["path"])
+            if not Path(path).exists():
+                print(f"Warning: source env file {path!r} not found, skipping", file=sys.stderr)
+            else:
+                files.append(path)
+    return files
+
+
+def wrap_with_sources(cmd: list, source_files: list[str]) -> list:
+    if not source_files:
+        return cmd
+    source_cmds = "; ".join(f"source {shlex.quote(f)}" for f in source_files)
+    return ["bash", "-c", f"set -a; {source_cmds}; set +a; exec \"$@\"", "--"] + cmd
 
 
 def build_env(agent: dict, current_depth: int) -> dict:
@@ -285,7 +307,9 @@ def _cmd_show_config(config: dict, path: str) -> None:
         for agent in tier.get("agents", []):
             print(f"  agent: {agent['id']}   cli={agent['cli']}  model={agent.get('model','default')}  args={agent.get('args', [])}")
             for ev in agent.get("env", []):
-                if ev["type"] == "file":
+                if ev["type"] == "source":
+                    print(f"    env: (source: {ev['path']})")
+                elif ev["type"] == "file":
                     print(f"    env: {ev['name']} (file: {ev['path']})")
                 else:
                     print(f"    env: {ev['name']} (env: {ev['var']})")
@@ -342,6 +366,8 @@ def _cmd_dispatch(config: dict, templates: dict, prompt: str, args, depth: int) 
         if cmd is None:
             print(f"Error: agent {agent['id']} has empty prompt_flag, cannot dispatch", file=sys.stderr)
             sys.exit(1)
+        source_files = get_source_files(agent)
+        cmd = wrap_with_sources(cmd, source_files)
         if args.dry_run:
             print(f"[DRY RUN] agent={agent['id']}")
             print(f"  command: {cmd}")
@@ -394,6 +420,8 @@ def _cmd_dispatch(config: dict, templates: dict, prompt: str, args, depth: int) 
                 failures.append((agent["id"], "skip: empty prompt_flag", ""))
                 continue
 
+            source_files = get_source_files(agent)
+            cmd = wrap_with_sources(cmd, source_files)
             if args.dry_run:
                 print(f"[DRY RUN] tier={tier['id']}  agent={agent['id']}")
                 print(f"  command: {cmd}")
