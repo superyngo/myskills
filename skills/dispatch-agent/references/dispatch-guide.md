@@ -49,6 +49,27 @@ id = "primary"            # tier label (TOML order = fallback order)
   var = "OPENAI_KEY"
 ```
 
+### Permission Bypass Flags (Required for Non-Interactive Use)
+
+Dispatched agents run non-interactively and will stall on permission prompts unless bypassed:
+
+| CLI | Flag | Notes |
+|-----|------|-------|
+| `claude` | `--dangerously-skip-permissions` | Skips all tool permission prompts |
+| `codex` | `--dangerously-bypass-approvals-and-sandbox` | Skips approval and sandbox |
+| `copilot` | `--allow-all` | Allows all tool operations |
+| `gemini-npx` | `--skip-trust` | Already in template `extra_args` — do **not** add to agent `args` |
+
+Add these to each agent's `args` array in the config. Example:
+
+```toml
+[[tiers.agents]]
+id = "claude-default"
+cli = "claude"
+model = "default"
+args = ["--dangerously-skip-permissions"]
+```
+
 ---
 
 ## cli-templates.toml Format
