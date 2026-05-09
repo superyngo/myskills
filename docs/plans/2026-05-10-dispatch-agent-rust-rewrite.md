@@ -198,7 +198,7 @@ Behaviours preserved exactly:
 dispatch-agent [--config PATH] config [edit | show | path]
 ```
 - `config` (no arg) → `edit`.
-- `edit` — resolve config path (create empty file at user location if none exists; ask for confirmation? — **decision in §10**). Open with `$EDITOR`, then `$VISUAL`, then platform default (`vi` unix, `notepad` windows).
+- `edit` — resolve config path. If no config exists and `--config` was NOT given, exit 1 and suggest `dispatch-agent init` (per D3). If `--config PATH` was given and the path is missing, create an empty stub at PATH (user opted in by naming it). Open the resolved path with `$EDITOR`, then `$VISUAL`, then platform default (`vi` unix, `notepad` windows).
 - `show` — same output as `dispatch --show-config`, but requires only `config` subcommand (no `dispatch` semantics).
 - `path` — print resolved path (or non-zero exit + message if none found and `--config` not given). When `--config PATH` is given, print PATH literally even if the file doesn't exist (the user explicitly asked).
 - `--config PATH` overrides resolution. For `edit` with `--config PATH`, the path is created if missing (user opted in by naming it). Without `--config`, if no config exists, exit 1 and suggest `dispatch-agent init`. (No `--create` flag.)
@@ -210,16 +210,26 @@ dispatch-agent [--config PATH] config [edit | show | path]
 Replace the current minimal file with a fully commented reference. Outline:
 
 ```toml
-# cli-templates.toml — describes how dispatch-agent invokes each agent CLI.
+# =====================================================================
+# cli-templates.toml — describes HOW dispatch-agent invokes each agent CLI.
 #
-# Each top-level table is a TEMPLATE keyed by the name used in your
-# config's `cli = "..."` (or `template = "..."`) field.
+# This file ships with the dispatch-agent binary. It is NOT your
+# personal configuration. Your config lives in:
+#   ~/.config/dispatch-agent.toml          (user-level, shared)
+#   <git-root>/.config/dispatch-agent.toml (project-level)
 #
+# Run `dispatch-agent init` to generate a config, or
+# `dispatch-agent config edit` to open an existing one.
+# Each `cli = "..."` (or `template = "..."`) in your config must match
+# a top-level table key in THIS file. See §5.1 below for an annotated
+# config example.
+# =====================================================================
+
 # === Field reference ===
 #
 # detect_binary      (string, default = template name)
-#   The executable name searched on PATH for `detect` and availability
-#   checks. Use this when the actual binary differs from the logical
+#   Executable name searched on PATH for `detect` and availability
+#   checks. Use when the actual binary differs from the logical
 #   template name (e.g. gemini-npx → npx).
 #
 # subcommand         (string, default = "")
@@ -228,33 +238,50 @@ Replace the current minimal file with a fully commented reference. Outline:
 #
 # prompt_flag        (string, default = "")
 #   Flag used to pass the prompt non-interactively (e.g. "-p", "-q").
-#   Empty AND prompt_positional=false → agent is skipped at dispatch.
+#   WARNING: if both `prompt_flag = ""` and `prompt_positional = false`,
+#   the agent is **silently skipped** at dispatch (no error printed
+#   beyond a stderr warning). Always set one or the other.
 #
 # prompt_positional  (bool, default = false)
-#   If true, the prompt is appended as a positional arg right after
-#   the subcommand. Used together with subcommand for run-style CLIs.
+#   If true, prompt is appended as a positional arg right after the
+#   subcommand. Used with `subcommand` for run-style CLIs.
 #
 # model_flag         (string, default = "")
-#   Flag for `--model`. If empty and the agent's model != "default",
-#   the model is silently dropped (warning emitted).
+#   Flag for model selection (e.g. "--model"). If empty and the agent's
+#   `model` field is not `"default"`, the model is silently dropped
+#   (a stderr warning is emitted).
 #
 # extra_args         (string array, default = [])
-#   Args ALWAYS prepended to the agent's own `args` list. Use this to
-#   bake in package selectors or CLI feature flags (see gemini-npx).
+#   Args ALWAYS placed before `agent.args`. Both blocks come AFTER the
+#   subcommand and BEFORE the model/prompt flags (see command shape).
 #
 # version_flag       (string, default = "--version")
-#   Flag passed during `detect` to obtain a version string. Empty
-#   disables the version probe (e.g. when the binary is launched via npx
-#   and we don't want to download the package just to read a version).
+#   Flag passed during `detect` to read a version string. Empty disables
+#   the version probe (e.g. when binary is launched via npx and you
+#   don't want to download a package just to read a version). When
+#   empty, `detect` reports `"version": null` for this template.
 #
-# file_input_mode    ("arg", default = "arg")
-#   Reserved for future stdin support; currently only "arg" is honored
-#   (file contents passed inline via prompt_flag).
+# file_input_mode    (string enum {"arg"}, default = "arg")
+#   With "arg": when the user passes `-f FILE`, the file is read and
+#   its CONTENTS become the prompt string (delivered via `prompt_flag`
+#   or positionally). Future values may support stdin piping.
 #
 # verified           (bool, default = true)
-#   Marks whether non-interactive mode for this CLI has been verified.
-#   `false` → agent is shown but skipped at dispatch. Use during triage
-#   for new CLIs whose -p/--print contract is not yet trusted.
+#   Whether non-interactive mode for this CLI has been verified.
+#   `verified = false` → agent is listed by `detect`/`config show`/
+#   `--list`, but **skipped at dispatch** with a stderr warning. Use
+#   while triaging new CLIs whose -p/--print contract is not trusted.
+#
+# === Resulting command shape ===
+#
+#   <detect_binary|template_name>
+#       [subcommand]
+#       [extra_args …]
+#       [agent.args …]
+#       [model_flag <model>]              # only if model != "default"
+#       { prompt_flag <prompt>            # if prompt_positional = false
+#       | <prompt>                        # if prompt_positional = true
+#       }
 #
 # === Examples ===
 
@@ -262,32 +289,89 @@ Replace the current minimal file with a fully commented reference. Outline:
 [claude]
 prompt_flag = "-p"
 model_flag = "--model"
-# version_flag defaults to "--version"; file_input_mode defaults to "arg".
+# detect_binary defaults to "claude" (same as template key).
+# version_flag defaults to "--version"; file_input_mode defaults to "arg";
+# verified defaults to true.
 
 # 2) Subcommand + positional prompt (no -p flag at all).
 [opencode]
 subcommand = "run"
 prompt_positional = true
 model_flag = "--model"
-verified = true
+# verified omitted — defaults to true.
 
 # 3) Different binary on PATH from template name; bake in package selector.
 [gemini-npx]
 detect_binary = "npx"           # `which npx` powers detection
 prompt_flag = "-p"
 model_flag = "--model"
-version_flag = ""               # don't `npx ... --version` during detect
+version_flag = ""               # detect reports version as null
 extra_args = ["@google/gemini-cli@latest", "--skip-trust"]
+# Combining extra_args with an agent.args of ["--debug"] yields:
+#   npx @google/gemini-cli@latest --skip-trust --debug --model X -p "..."
 
-# 4) Hypothetical unverified CLI — kept in templates so detect can list it,
-#    but blocked from dispatch until the user sets verified = true.
-# [some-new-cli]
-# prompt_flag = "-p"
-# model_flag = "--model"
-# verified = false
+# 4) Real unverified CLI. Listed by `detect` but skipped at dispatch
+#    until the user verifies its non-interactive contract works.
+[some-new-cli]
+prompt_flag = "-p"
+model_flag = "--model"
+verified = false                # dispatch will warn-and-skip
 ```
 
 The annotated file is intended both as runtime data and as user documentation. The README/dispatch-guide will simply point to it.
+
+### 5.1 Annotated `dispatch-agent.toml` (user config) reference
+
+Embedded in `dispatch-guide.md` (and emitted commented at the top of any new config produced by `init`):
+
+```toml
+# =====================================================================
+# dispatch-agent.toml — your personal dispatch configuration.
+# Tier traversal is in TOML order; agents within a tier round-robin.
+# =====================================================================
+
+version = 1                       # schema version (currently 1)
+
+[[tiers]]
+id = "primary"                    # tier label; arbitrary string
+
+  [[tiers.agents]]
+  id = "claude-default"           # unique across all agents; [a-zA-Z0-9_-] only
+  cli = "claude"                  # MUST match a top-level key in cli-templates.toml
+  # template = "claude"           # OPTIONAL override of which template to use;
+                                  # falls back to `cli` when omitted (used when two
+                                  # agents share a binary but differ in args/model).
+  model = "default"               # "default" → omit the model_flag entirely
+  args = ["--dangerously-skip-permissions"]
+                                  # appended AFTER template.extra_args; see template
+                                  # docs for the full command shape.
+
+    [[tiers.agents.env]]          # env injection (zero or more entries per agent)
+    type = "file"                 # read file contents → set env var <name>
+    name = "GITHUB_TOKEN"
+    path = "~/.config/gh/token"
+
+    [[tiers.agents.env]]
+    type = "env"                  # forward an env var from the parent shell
+    name = "OPENAI_API_KEY"
+    var = "OPENAI_API_KEY"        # name in the PARENT shell's environment
+
+    [[tiers.agents.env]]
+    type = "source"               # source a shell env file inside a bash wrapper
+    path = "~/.zshrc.d/zclaude.env"
+                                  # NOTE: name/var fields are not used for `source`;
+                                  # the file is loaded via `set -a; source X; set +a`
+                                  # so every assignment becomes an exported var.
+
+[[tiers]]
+id = "fallback"
+
+  [[tiers.agents]]
+  id = "gemini-npx-default"
+  cli = "gemini-npx"              # uses the gemini-npx template (binary = npx)
+  model = "default"
+  args = []
+```
 
 ---
 
