@@ -62,7 +62,9 @@ skills/dispatch-agent/
       config_cmd.rs
     scripts/
       regen_golden.sh       # regenerate fixtures/golden/ from Python
-      parity_check.sh       # run Python + Rust on each fixture, diff outputs
+      parity_check.sh       # delegates to regen_golden.sh internally,
+                            # then runs the Rust binary on the same inputs
+                            # and diffs outputs (used in PR-2 CI gating)
   scripts/              # Python scripts — untouched in this rewrite
   data/cli-templates.toml  # rewritten with comments
 ```
@@ -97,6 +99,8 @@ pub struct Agent  { pub id: String, pub cli: String, pub model: Option<String>,
                     pub args: Vec<String>, pub env: Vec<EnvEntry>,
                     pub template: Option<String> }
 pub enum   EnvEntry { File{name:String,path:String}, Env{name:String,var:String}, Source{path:String} }
+#[non_exhaustive]
+#[allow(dead_code)]                // single variant by design; reserved for stdin/pipe modes
 pub enum FileInputMode { Arg }     // serde rename "arg"; rejects unknown variants
 pub struct Template { pub detect_binary: Option<String>, pub subcommand: Option<String>,
                       pub prompt_flag: Option<String>, pub prompt_positional: bool,
@@ -216,7 +220,28 @@ dispatch-agent [--config PATH] <SUBCOMMAND>
 - Reads `data/cli-templates.toml` resolved relative to **the binary's installed location**, with `DISPATCH_AGENT_TEMPLATES` env override (see §7).
 
 #### `init`
-- Reads JSON from stdin (same schema as today).
+- Reads JSON from stdin. **Stdin schema** (mirrors what the Python init.py consumes today, produced by the calling skill):
+  ```jsonc
+  {
+    "save_location": "user" | "project",
+    "tier_order":    ["primary", "fallback"],          // order tiers appear in output TOML
+    "agents": [
+      { "id":   "claude-default",                       // [a-zA-Z0-9_-]+
+        "cli":  "claude",                               // template key
+        "tier": "primary",                              // must be in tier_order
+        "model": "default",                             // optional; falls back to DEFAULT_MODELS[cli]
+        "args": ["--dangerously-skip-permissions"],     // optional Vec<String>
+        "template": "claude",                           // optional template override
+        "env": [
+          { "type": "file",   "name": "X", "path": "~/p" },
+          { "type": "env",    "name": "Y", "var":  "Y" },
+          { "type": "source", "path": "~/env.sh" }
+        ]
+      }
+    ]
+  }
+  ```
+  Missing `tier_order` or `save_location` → exit 1 with the field name.
 - Writes TOML to:
   - `<git-root>/.config/dispatch-agent.toml` if `save_location == "project"`
   - `~/.config/dispatch-agent.toml` otherwise
@@ -270,7 +295,7 @@ dispatch-agent [--config PATH] config [edit | show | path]
   - After the editor exits: if the file's mtime is unchanged and exit code was 0, print stderr hint: `hint: your editor may have returned immediately. For GUI editors, set EDITOR to include a wait flag (e.g. 'code -w', 'subl -w')`.
   - Then re-run `load_config` on the saved file. If TOML/validation fails, print `warning: config has syntax errors: <msg>` to stderr but exit 0 (the user chose to save it; a follow-up dispatch will re-surface the error).
 - `show` — uses the **identical** config-resolution + error-reporting code path as `dispatch --show-config` (shared via `dispatch::display::format_show_config` and a shared `resolve_or_error` helper). Error messages are guaranteed identical, not just output format.
-- `path` — print resolved path (or non-zero exit + message if none found and `--config` not given). On the no-config error path, also print the default search locations to stderr for discoverability:
+- `path` — print resolved path (or **exit 1** + message if none found and `--config` not given). On the no-config error path, also print the default search locations to stderr for discoverability:
   ```
   error: no config file found
   hint: default locations searched:
@@ -469,7 +494,7 @@ Python uses `select` on stdout+stderr fds. Rust port (unix only):
 
 ### 6.1 Child lifecycle state machine
 
-All concurrent access (signal watcher, timeout, main thread) coordinates through a single mutex:
+(Defined in `dispatch/process/mod.rs`.) All concurrent access (signal watcher, timeout, main thread) coordinates through a single mutex:
 
 ```rust
 struct ChildState {
@@ -543,7 +568,7 @@ Distribution-time concern is deferred; in this rewrite we ship source only and t
 
 ### Test scaffolding
 
-**Fake-agent harness.** Subprocess-based integration tests use a `tests/bin/fake_agent.rs` `[[bin]]` target (registered via `Cargo.toml [[test]]` or built as a test artifact). It reads `FAKE_AGENT_MODE` and branches:
+**Fake-agent harness.** `fake_agent` is registered as `[[bin]]` in `Cargo.toml` with `path = "tests/bin/fake_agent.rs"`. Integration tests reference it via `env!("CARGO_BIN_EXE_fake_agent")`. It reads `FAKE_AGENT_MODE` and branches:
 - `exit-0`: exit 0.
 - `exit-N`: exit N (parsed from env).
 - `sleep`: touch `$READY_FILE` then sleep 60 s.
@@ -596,7 +621,7 @@ Tests set `DISPATCH_AGENT_TEMPLATES` to a fixture TOML registering `fake-agent` 
   - Env injection: register `print-env` fake agent, config has all three env entry types (`file`, `env`, `source`), assert child stdout contains the expected `TEST_*` variables (verifies `build_env` and `wrap_with_sources` end-to-end).
   - `verified = false` agent skipped at dispatch with the documented stderr warning.
   - `--config` edge cases: relative path, `~`-prefixed path, path containing spaces, `--config /nonexistent` (clear error message).
-  - `cli-templates.toml` validation test: `load_templates()` against the actual repo file, assert all original entries deserialise with equal field values, assert no entry has an unrecognised `file_input_mode`.
+  - `cli_templates_validation` integration test: `load_templates()` against the actual repo file (path via `DISPATCH_AGENT_TEMPLATES`), assert all original entries deserialise with equal field values, assert no entry has an unrecognised `file_input_mode`.
 - `config_cmd.rs`:
   - `config path` outputs resolved path; on no-config, exit non-zero AND stderr lists default search locations.
   - `config show` matches `dispatch --show-config` byte-for-byte (snapshot).
@@ -616,7 +641,7 @@ Golden files under `tests/fixtures/golden/` (generated by running the Python scr
 - **D1 Resolved: yes.** `init` round-trip-parses the emitted TOML *and* deserialises to the `Config` struct from `types.rs` before atomic rename. Combined with D11 (which mandates `toml::to_string_pretty` from typed structs), this gives strictly stronger guarantees than Python's `tomllib.loads` validation.
 - **D2 Resolved: `notepad` on Windows** (no surprise). Moot in practice because dispatch is unix-only in v1; only `config edit` is exercised on Windows.
 - **D3 Resolved: refuse + suggest `init`** when no config exists and `--config` is absent. With `--config PATH`, write a minimal `version = 1` stub. Encoded in §4 and tested in §9.
-- **D4 Resolved:** `--config` accepted at both root and subcommand level. **Subcommand-level wins** on conflict (matches argparse/clap convention; root is fallback). Python only accepts it at the dispatch subcommand level, so subcommand-wins preserves parity.
+- **D4 Resolved:** `--config` lives only on the root `Cli` struct in clap; subcommand args structs receive it via a shared `GlobalArgs` flattened with `#[command(flatten)]`. Because the flag is parsed once at the root, "subcommand-level wins" is automatic — there is no second occurrence to conflict with. This satisfies parity with Python's single-level arg without complicating clap's parser.
 - **D5 Resolved: deferred to distribution PR.** Tests use the `DISPATCH_AGENT_TEMPLATES` env override (§7 step 1); the shipped-binary discovery chain (steps 2–3) is implementation-trivial. §7 step 4 (the build.rs / `cargo run` development fallback) is **dropped from v1** — `cargo test` always sets the env override; running `cargo run` interactively is not a supported developer workflow until then.
 - **D6 Resolved: use `wait-timeout` crate.** Hand-rolled `Condvar` + wait thread *adds* a thread and synchronization that wouldn't otherwise exist. With `wait-timeout`, the main thread directly calls `child.wait_timeout(duration)`; only the signal watcher remains as an auxiliary thread. ~200 LOC dep, no transitive deps. Marginal cost is negligible.
 - **D7 Resolved:** use `signal-hook` on unix. Watcher thread runs `signal_hook::iterator::Signals` for SIGINT/SIGTERM, coordinates with the main thread through the `ChildState` mutex described in §6.1 (no raw signal handlers). Windows path is a no-op (dispatch is unix-only in v1).
@@ -672,7 +697,7 @@ Each layer is independently testable and reviewable.
 - `cargo fmt --check` clean.
 - All `insta` snapshots committed under `tests/snapshots/`.
 - `tests/fixtures/golden/` populated and `scripts/regen_golden.sh` produces no diff.
-- Annotated `cli-templates.toml` parses identically to the old one (tested via `templates_validation` integration test naming the actual repo file via `DISPATCH_AGENT_TEMPLATES`).
+- Annotated `cli-templates.toml` parses identically to the old one (tested via the `cli_templates_validation` integration test naming the actual repo file via `DISPATCH_AGENT_TEMPLATES`).
 - Python scripts and existing Python tests still pass (no regression).
 - `CHANGELOG.md` has an `Unreleased` entry summarising the Rust port.
 - `references/dispatch-guide.md` updated with the §5.1 annotated config example.
