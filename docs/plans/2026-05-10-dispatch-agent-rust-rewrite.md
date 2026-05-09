@@ -19,6 +19,7 @@
 - No packaging/distribution pipeline yet (handled in a follow-up).
 - No new dispatch features (e.g. parallel fan-out) — strict port.
 - SKILL.md / references rewrite to point at the binary is a follow-up phase.
+- **v1 targets unix (macOS, Linux) only.** All process-group, signal, and `flock` code is gated behind `#[cfg(unix)]`. On Windows the binary still compiles; `detect`/`init`/`config` work, but `dispatch` exits 1 with `error: dispatch is unix-only in v1`. Full Windows support (CREATE_NEW_PROCESS_GROUP, SetConsoleCtrlHandler, byte-range locks) is a follow-up.
 
 ---
 
@@ -130,6 +131,7 @@ pub fn format_list_detect(detect: &IndexMap<String, DetectInfo>) -> String;
 | `fs2` | `flock` for rr-state lock file | Cross-platform advisory lock |
 | `indexmap` | Insertion-ordered map for templates and detect output | Stable JSON/iteration order without hand-serialization |
 | `signal-hook` | SIGINT/SIGTERM forwarding with safe pipe-based handlers | Calling `killpg` from a raw libc handler is async-signal-unsafe; signal-hook is the standard safe wrapper |
+| `wait-timeout` | `child.wait_timeout(d)` without a wait thread | Replaces hand-rolled Condvar + wait thread; ~200 LOC, no transitive deps |
 
 No tokio, no tracing. All blocking I/O in main thread; subprocess I/O via `std::process::Command` + threads/`select` equivalent.
 
@@ -292,16 +294,40 @@ The annotated file is intended both as runtime data and as user documentation. T
 ## 6. Dispatch internals (port notes)
 
 ### Subprocess I/O loop
-Python uses `select` on stdout+stderr fds. Rust port:
-- Spawn child with stdout+stderr piped, in a new process group (`pre_exec` setsid on unix).
-- Two reader threads: one drains stdout → host stdout, one buffers stderr.
-- Main thread waits with timeout (`Condvar` + `Mutex<Option<ExitStatus>>` updated by a `wait()` thread, OR simply `wait_timeout` via the `wait-timeout` crate — **see §10 D6**).
-- On timeout: kill process group with SIGKILL.
-- On SIGINT/SIGTERM (parent): use `signal-hook` or raw `libc::signal` — **decision §10 D7** — forward to child group then exit 1.
-- Verbose ticker thread: prints `[waiting: <id> — Ns elapsed]` every 10s.
+Python uses `select` on stdout+stderr fds. Rust port (unix only):
+- Spawn child with stdout+stderr piped, in a new process group (`pre_exec` setsid).
+- Two reader threads: one drains stdout → host stdout (calling `flush()` after each write to avoid buffering visible hangs), one drains stderr into a `Vec<u8>` buffer behind a `Mutex`.
+- Main thread blocks on `child.wait_timeout(duration)` (see D6 below).
+- Verbose ticker thread: parks 10 s at a time, prints `[waiting: <id> — Ns elapsed]` to stderr; checks an `AtomicBool` shutdown flag each wakeup.
+- **Thread join order after wait returns:** (1) set ticker shutdown flag and unpark, (2) `child.kill()` if still alive (cleanup safety), (3) join both reader threads (their pipes will EOF as the child is reaped), (4) join ticker thread, (5) consume stderr buffer for the failure summary.
+
+### 6.1 Child lifecycle state machine
+
+All concurrent access (signal watcher, timeout, main thread) coordinates through a single mutex:
+
+```rust
+struct ChildState {
+    pid: Option<i32>,           // process-group leader pid; None = no live child
+    killed_by_timeout: bool,    // set by timeout branch before SIGKILL
+    interrupted: bool,          // set by signal watcher when SIGINT/SIGTERM seen
+}
+let state = Arc::new(Mutex::new(ChildState::default()));
+```
+
+Transitions:
+- **Spawn:** main thread sets `pid = Some(pgid)`.
+- **Timeout fires:** main thread (after `wait_timeout` returns `None`) locks state, sets `killed_by_timeout = true`, calls `killpg(pgid, SIGKILL)` while still holding the lock, then loops back to `wait_timeout` for reaper to collect the corpse.
+- **Signal arrives:** signal-hook watcher thread locks state, if `pid.is_some()` calls `killpg(pid, signum)` (ignoring `ESRCH`), sets `interrupted = true`. Releases lock. Does NOT exit the process — the main thread observes `interrupted` after the wait returns.
+- **wait returns:** main thread immediately locks state and sets `pid = None` (closes the use-after-reap window). Then inspects `killed_by_timeout` / `interrupted` to label the failure.
+- **Between agents:** the gap between one wait returning and the next spawn has `pid = None`; the watcher's `killpg` is skipped. If `interrupted` is set, the dispatch loop breaks before spawning the next agent and exits 1.
+
+Failure-label precedence: `interrupted` > `killed_by_timeout` > raw exit code.
 
 ### rr-state locking
-Match Python's `fcntl.flock` semantics with `fs2::FileExt::lock_exclusive` on a file at `~/.cache/dispatch-agent/rr-state.json`. Read → mutate → atomic-rename write while holding the lock; release on close.
+Match Python's `fcntl.flock` cadence (NOT held during child execution):
+1. Before the dispatch loop: brief exclusive lock → read JSON → unlock. Use this snapshot to pick the round-robin starting agent.
+2. On a successful child exit: brief exclusive lock → re-read JSON (pick up concurrent writers) → mutate the tier's pointer → atomic-rename write → unlock.
+On read failure (missing file / parse error): treat as `{}`. Parent dirs are created on first write (via `fsutil::write_atomic`).
 
 ### Env injection
 `build_env(agent, depth)`:
@@ -379,8 +405,8 @@ For each Python integration test under `tests/`, port the assertions into Rust i
 - **D3** `config edit` when no config exists: create empty stub at user location, or refuse and tell user to run `init`? — **Tentative: refuse + suggest `init`** (avoids partial configs that would crash `dispatch`).
 - **D4 Resolved:** `--config` accepted at both root and subcommand level. **Subcommand-level wins** on conflict (matches argparse/clap convention; root is fallback). Python only accepts it at the dispatch subcommand level, so subcommand-wins preserves parity.
 - **D5** Detection of CLI templates path in shipped binary (see §7) — defer concrete decision to distribution PR; tests use env override.
-- **D6** Use `wait-timeout` crate or hand-rolled `Condvar`? — **Tentative: hand-rolled to keep dep set small.**
-- **D7** Signal forwarding architecture. **Resolved: use `signal-hook` on unix.** Raw libc `signal()` handlers cannot safely call `killpg` (async-signal-unsafe). Architecture: spawn a `signal_hook::iterator::Signals` iterator on a watcher thread that holds an `Arc<Mutex<Option<Pid>>>` of the current child group; on signal, lock and `killpg`, then set an exit-requested flag the main loop checks after the child exits. Windows: ctrl-c handler kills child by handle.
+- **D6 Resolved: use `wait-timeout` crate.** Hand-rolled `Condvar` + wait thread *adds* a thread and synchronization that wouldn't otherwise exist. With `wait-timeout`, the main thread directly calls `child.wait_timeout(duration)`; only the signal watcher remains as an auxiliary thread. ~200 LOC dep, no transitive deps. Marginal cost is negligible.
+- **D7 Resolved:** use `signal-hook` on unix. Watcher thread runs `signal_hook::iterator::Signals` for SIGINT/SIGTERM, coordinates with the main thread through the `ChildState` mutex described in §6.1 (no raw signal handlers). Windows path is a no-op (dispatch is unix-only in v1).
 - **D8** Output of `detect` JSON: stable key order. **Resolved: use `indexmap::IndexMap` end-to-end** so template insertion order (and therefore `KNOWN_CLIS` order) is preserved automatically without hand-serialization.
 - **D9** `init`'s `DEFAULT_MODELS` — keep as Rust `const`? Or move into `cli-templates.toml` as a `default_model` field? — **Tentative: keep in code for parity; refactor in follow-up.**
 - **D10** Behaviour when required field is omitted in env entry of type `file`/`env` — Python KeyErrors. **Resolved: `EnvEntry` is a tagged enum so missing fields are caught at deserialize-time with a clear serde error.**
