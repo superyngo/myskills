@@ -29,18 +29,22 @@ skills/dispatch-agent/
   rust/
     Cargo.toml
     src/
-      main.rs           # clap parser, subcommand dispatch
+      main.rs           # clap parser, top-level subcommand dispatch
       cli.rs            # clap derive structs
-      config.rs         # find_config, load/parse Config TOML, schema types
-      templates.rs      # load cli-templates.toml, Template type
+      types.rs          # leaf: Config, Tier, Agent, EnvEntry, Template, DetectInfo
+      config.rs         # find_config, find_git_root, load Config TOML
+      templates.rs      # load cli-templates.toml (owns §7 resolution chain)
       detect.rs         # detect subcommand
       init.rs           # init subcommand (stdin JSON → TOML)
-      dispatch.rs       # dispatch subcommand (tier fallback + RR)
-      editor.rs         # open editor for `config edit`
-      env_inject.rs     # resolve_env_var, source-file wrapping
+      dispatch/
+        mod.rs          # subcommand entry, tier traversal, rr-state mutation
+        command.rs      # build_command + wrap_with_sources (argv construction)
+        process.rs      # spawn, process group, signal forwarding, timeout, verbose tick
+        display.rs      # format_list, format_show_config (shared with config_cmd)
+      config_cmd.rs     # config subcommand (edit / show / path); editor inlined
+      env.rs            # resolve_env_var, get_source_files, build_env
       rr_state.rs       # round-robin state load/store with file lock
-      atomic.rs         # write-temp-then-rename helper, 0600 perms
-      errors.rs         # anyhow context strings centralised
+      fsutil.rs         # write_atomic (mkdir-p, temp, chmod 0600, rename)
     tests/
       detect.rs
       init.rs
@@ -51,6 +55,65 @@ skills/dispatch-agent/
 ```
 
 Binary name: `dispatch-agent` (set via `[[bin]]` in Cargo.toml). Pre-built artifact will be committed under `skills/dispatch-agent/bin/<target-triple>/dispatch-agent` in a follow-up PR; this PR delivers source + tests only.
+
+### 2.1 Module dependency graph (DAG, leaves at bottom)
+
+```
+main.rs        → cli, detect, init, dispatch::mod, config_cmd
+detect.rs      → templates, types
+init.rs        → types, fsutil, config (find_git_root)
+dispatch/mod   → types, templates, env, rr_state, fsutil, dispatch::{command,process,display}
+config_cmd.rs  → config, types, templates, dispatch::display
+env.rs         → types
+rr_state.rs    → fsutil, types
+templates.rs   → types
+config.rs      → types, fsutil
+fsutil.rs      → (leaf — std only)
+types.rs       → (leaf — serde derives only, no I/O, no business logic)
+```
+
+Direction is strictly downward; no cycles possible by construction.
+
+### 2.2 Public API signatures (key entry points)
+
+```rust
+// types.rs — pure data; all derive Serialize+Deserialize where needed.
+pub struct Config { pub version: Option<u32>, pub tiers: Vec<Tier> }
+pub struct Tier   { pub id: String, pub agents: Vec<Agent> }
+pub struct Agent  { pub id: String, pub cli: String, pub model: Option<String>,
+                    pub args: Vec<String>, pub env: Vec<EnvEntry>,
+                    pub template: Option<String> }
+pub enum   EnvEntry { File{name:String,path:String}, Env{name:String,var:String}, Source{path:String} }
+pub struct Template { pub detect_binary: Option<String>, pub subcommand: Option<String>,
+                      pub prompt_flag: Option<String>, pub prompt_positional: bool,
+                      pub model_flag: Option<String>, pub extra_args: Vec<String>,
+                      pub version_flag: Option<String>, pub file_input_mode: Option<String>,
+                      pub verified: bool /* default true */ }
+pub struct DetectInfo { pub path: Option<String>, pub version: Option<String>,
+                        pub callable: bool, pub verified: bool }
+
+// fsutil.rs
+pub fn write_atomic(path: &Path, content: &[u8]) -> anyhow::Result<()>;
+
+// templates.rs — owns the §7 resolution chain end-to-end.
+pub fn load_templates() -> anyhow::Result<IndexMap<String, Template>>;
+
+// config.rs
+pub fn find_git_root() -> PathBuf;             // git rev-parse, fallback to cwd
+pub fn find_config(arg: Option<&Path>) -> Option<PathBuf>;
+pub fn load_config(path: &Path) -> anyhow::Result<Config>;
+
+// dispatch/command.rs
+impl Template { pub fn build_command(&self, agent: &Agent, prompt: &str) -> Option<Vec<String>>; }
+pub fn wrap_with_sources(cmd: Vec<String>, sources: &[String]) -> Vec<String>;
+
+// dispatch/display.rs — pure functions, return formatted String for testability.
+pub fn format_list(config: &Config) -> String;
+pub fn format_show_config(config: &Config, path: &Path) -> String;
+pub fn format_list_detect(detect: &IndexMap<String, DetectInfo>) -> String;
+```
+
+`IndexMap` is used (instead of `HashMap`) wherever stable ordering matters — notably template iteration in `detect` (replaces D8's hand-serialization).
 
 ---
 
@@ -65,6 +128,8 @@ Binary name: `dispatch-agent` (set via `[[bin]]` in Cargo.toml). Pre-built artif
 | `anyhow` | Error wrapping with context | Concise error propagation |
 | `which` | `shutil.which` equivalent | Tiny, well-tested |
 | `fs2` | `flock` for rr-state lock file | Cross-platform advisory lock |
+| `indexmap` | Insertion-ordered map for templates and detect output | Stable JSON/iteration order without hand-serialization |
+| `signal-hook` | SIGINT/SIGTERM forwarding with safe pipe-based handlers | Calling `killpg` from a raw libc handler is async-signal-unsafe; signal-hook is the standard safe wrapper |
 
 No tokio, no tracing. All blocking I/O in main thread; subprocess I/O via `std::process::Command` + threads/`select` equivalent.
 
@@ -301,10 +366,11 @@ For each Python integration test under `tests/`, port the assertions into Rust i
 - **D4** Should `--config PATH` at root vs at subcommand both be accepted? — **Tentative: accept at both, root wins on conflict.**
 - **D5** Detection of CLI templates path in shipped binary (see §7) — defer concrete decision to distribution PR; tests use env override.
 - **D6** Use `wait-timeout` crate or hand-rolled `Condvar`? — **Tentative: hand-rolled to keep dep set small.**
-- **D7** `signal-hook` vs raw libc for SIGINT/SIGTERM forwarding? — **Tentative: raw libc on unix, no-op on windows** (Python's behaviour also unix-specific).
-- **D8** Output of `detect` JSON: stable key order vs serde_json default? Python uses dict insertion order matching `KNOWN_CLIS`. Rust port must use `IndexMap` or hand-serialize. — **Tentative: hand-serialize in `KNOWN_CLIS` order**, no extra dep.
+- **D7** Signal forwarding architecture. **Resolved: use `signal-hook` on unix.** Raw libc `signal()` handlers cannot safely call `killpg` (async-signal-unsafe). Architecture: spawn a `signal_hook::iterator::Signals` iterator on a watcher thread that holds an `Arc<Mutex<Option<Pid>>>` of the current child group; on signal, lock and `killpg`, then set an exit-requested flag the main loop checks after the child exits. Windows: ctrl-c handler kills child by handle.
+- **D8** Output of `detect` JSON: stable key order. **Resolved: use `indexmap::IndexMap` end-to-end** so template insertion order (and therefore `KNOWN_CLIS` order) is preserved automatically without hand-serialization.
 - **D9** `init`'s `DEFAULT_MODELS` — keep as Rust `const`? Or move into `cli-templates.toml` as a `default_model` field? — **Tentative: keep in code for parity; refactor in follow-up.**
-- **D10** Behaviour when `args` field omitted in env entry of type `file`/`env` — Python KeyErrors. **Tentative: explicit error with clear message.**
+- **D10** Behaviour when required field is omitted in env entry of type `file`/`env` — Python KeyErrors. **Resolved: `EnvEntry` is a tagged enum so missing fields are caught at deserialize-time with a clear serde error.**
+- **D11** `init.rs` TOML emission. **Resolved: use `toml::to_string_pretty`** with `Serialize` derives on the types in `types.rs`. Existing tests assert parse-equivalence, not formatting parity, so we lose nothing and avoid hand-rolling `escape_toml_string`. Round-trip validation (re-parse the emitted TOML to `Config`) still runs before atomic rename.
 
 ---
 
