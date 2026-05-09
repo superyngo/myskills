@@ -172,17 +172,24 @@ dispatch [-p PROMPT | -f FILE]
          [--dry-run] [--list] [--show-config] [--verbose]
 ```
 Behaviours preserved exactly:
-- `--timeout 0` → error; `-1` (default) → no timeout.
-- `-f` rejects > 256 KiB.
-- `--list` with no config falls back to `detect`-style printout.
-- `--show-config` prints layer (`user` / `project`) and resolved tiers/agents/env.
-- Recursion guard via `DISPATCH_AGENT_DEPTH` (limit 5).
-- Per-agent process group (`setsid`) so timeout/signal kills children.
-- SIGINT/SIGTERM forwarded to child group, then exit 1.
-- Verbose ticker every 10s while child runs.
-- `failure code == -SIGKILL` reported as `timeout`.
-- rr-state file `~/.cache/dispatch-agent/rr-state.json`; advisory exclusive lock during read+write window; pointer updated **only on success**.
-- Source env files wrapped in `bash -c 'set -a; source X; set +a; exec "$@"' -- <cmd>`.
+- `--timeout 0` → error; `-1` (default) → no timeout. Type: `i64`. Use clap's default validator format for non-numeric input; custom message only for the `0` case (`error: --timeout 0 is invalid; use -1 for no timeout`).
+- `-f` rejects > 256 KiB (`error: file exceeds 256 KiB limit`); missing file → `error: file not found: <path>` (exit 1).
+- `--list` with no config falls back to detect-style printout (see `format_list_detect`); with config, uses `format_list` which groups by tier and shows `[✓]`/`[✗]` per agent.
+- `--show-config` prints layer (`user` / `project`) and resolved tiers/agents/env. **Requires a config file to exist; if none found, exit 1 with `error: no config file found. Run 'dispatch-agent init' to create one.`**
+- `--dry-run` makes `-p`/`-f` optional. With no prompt, the printed command substitutes the literal placeholder `<PROMPT>`.
+- `--agent ID` not found in config → exit 1 + `error: agent 'ID' not found in config`. Bypasses tier traversal entirely (single attempt).
+- `--tier ID` not found → exit 1 + `error: tier 'ID' not found in config`. Otherwise: traversal starts at that tier and continues to subsequent tiers on failure.
+- Recursion guard: `DISPATCH_AGENT_DEPTH` parsed as int (unset/unparseable → 0). If current depth ≥ 5 → exit 1 + `error: recursion depth limit (5) reached`. Before spawning child, set the var to `current + 1` in the child's env only.
+- Per-agent process group (`setsid` via `pre_exec` on unix) so timeout/signal kills children.
+- SIGINT/SIGTERM forwarded to child group via `signal-hook` watcher thread, then dispatcher exits 1.
+- Verbose ticker every 10 s while child runs. `--verbose` also prints `[attempting <agent.id>]` before each attempt and `[<agent.id>] (tier: <tier.id>)` on success (matches Python). It does NOT change `--list`/`--show-config`/`--dry-run` output.
+- `failure code == -SIGKILL` reported as `timeout` in the failure summary.
+- **Exit code propagation:** on the success branch, dispatcher exits with the child's exit code (0 if child returned 0; otherwise the child's code is treated as failure and triggers fallback). All-agents-failed → exit 1. (Python's behaviour: a non-zero child rc triggers fallback, so "success" here means child rc == 0; dispatcher exit 0 on success.)
+- rr-state file `~/.cache/dispatch-agent/rr-state.json`. If missing, treat as `{}`; create parent dirs on first write. Advisory exclusive lock held during read+mutate+write; pointer updated **only on success**.
+- Source env files wrapped in `bash -c 'set -a; source X; set +a; exec "$@"' -- <cmd>`. Hardcoded bash is intentional (parity with Python); do NOT shell-detect.
+- Mutex groups implemented via `clap::ArgGroup { multiple: false, required: false }` for `-p`/`-f` and `--tier`/`--agent`.
+- `verified = false` agents are skipped at dispatch with a stderr warning: `warning: agent 'ID' uses unverified template 'NAME', skipping`.
+- Template lookup per agent: `templates.get(agent.template.as_deref().unwrap_or(&agent.cli))`. Missing template → stderr warning, skip agent (does not abort tier).
 
 #### `config`
 ```
@@ -191,8 +198,8 @@ dispatch-agent [--config PATH] config [edit | show | path]
 - `config` (no arg) → `edit`.
 - `edit` — resolve config path (create empty file at user location if none exists; ask for confirmation? — **decision in §10**). Open with `$EDITOR`, then `$VISUAL`, then platform default (`vi` unix, `notepad` windows).
 - `show` — same output as `dispatch --show-config`, but requires only `config` subcommand (no `dispatch` semantics).
-- `path` — print resolved path (or non-zero exit + message if none found and `--config` not given).
-- `--config PATH` overrides resolution; for `edit`, opens that exact path (creates if missing only when explicitly opted-in via `--create`).
+- `path` — print resolved path (or non-zero exit + message if none found and `--config` not given). When `--config PATH` is given, print PATH literally even if the file doesn't exist (the user explicitly asked).
+- `--config PATH` overrides resolution. For `edit` with `--config PATH`, the path is created if missing (user opted in by naming it). Without `--config`, if no config exists, exit 1 and suggest `dispatch-agent init`. (No `--create` flag.)
 
 ---
 
@@ -343,11 +350,18 @@ Distribution-time concern is deferred; in this rewrite we ship source only and t
 - `detect.rs`: with `DISPATCH_AGENT_TEMPLATES` pointing at a fixture and `PATH` rigged with `tempdir` containing fake binaries, assert JSON output.
 - `dispatch.rs`:
   - `--dry-run` happy path prints expected command.
+  - `--dry-run` with NO prompt: stdout contains literal `<PROMPT>`, exit 0.
   - `--list` no-config falls back to detect.
-  - `--list` with config marks agents.
+  - `--list` with config marks agents (`[✓]`/`[✗]`).
   - `--show-config` prints both layers correctly.
+  - `--show-config` no config → exit 1, stderr suggests `init`.
+  - `--agent BAD` → exit 1, stderr contains "not found".
+  - `--tier BAD` → exit 1, stderr contains "not found".
+  - Child exit propagation: fake agent exits 0 (success branch) → dispatcher exits 0; fake agent exits 42 in single-tier → dispatcher exits 1 after fallback exhausted.
+  - Recursion guard: invoke with `DISPATCH_AGENT_DEPTH=5`, expect immediate exit 1 with depth-limit message.
   - timeout: spawn `sleep 30`, set `--timeout 1`, expect failure marked `timeout` and rc != 0.
   - rr-state pointer advances on success, not on failure (use `true` and `false` shell builtins as fake agents).
+  - rr-state file missing on first run: dispatch succeeds and creates the file.
 - `config_cmd.rs`:
   - `config path` outputs resolved path; non-zero when none.
   - `config show` matches `dispatch --show-config`.
@@ -363,7 +377,7 @@ For each Python integration test under `tests/`, port the assertions into Rust i
 - **D1** Should `init` round-trip-parse the TOML and also deserialise to the same `Config` struct used by `dispatch` (stronger guarantee than Python's `tomllib.loads`)? — **Tentative: yes.**
 - **D2** Default editor on Windows: `notepad` vs first-found of `code -w`/`notepad++`? — **Tentative: notepad (no surprise).**
 - **D3** `config edit` when no config exists: create empty stub at user location, or refuse and tell user to run `init`? — **Tentative: refuse + suggest `init`** (avoids partial configs that would crash `dispatch`).
-- **D4** Should `--config PATH` at root vs at subcommand both be accepted? — **Tentative: accept at both, root wins on conflict.**
+- **D4 Resolved:** `--config` accepted at both root and subcommand level. **Subcommand-level wins** on conflict (matches argparse/clap convention; root is fallback). Python only accepts it at the dispatch subcommand level, so subcommand-wins preserves parity.
 - **D5** Detection of CLI templates path in shipped binary (see §7) — defer concrete decision to distribution PR; tests use env override.
 - **D6** Use `wait-timeout` crate or hand-rolled `Condvar`? — **Tentative: hand-rolled to keep dep set small.**
 - **D7** Signal forwarding architecture. **Resolved: use `signal-hook` on unix.** Raw libc `signal()` handlers cannot safely call `killpg` (async-signal-unsafe). Architecture: spawn a `signal_hook::iterator::Signals` iterator on a watcher thread that holds an `Arc<Mutex<Option<Pid>>>` of the current child group; on signal, lock and `killpg`, then set an exit-requested flag the main loop checks after the child exits. Windows: ctrl-c handler kills child by handle.
