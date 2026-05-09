@@ -95,6 +95,12 @@ pub struct DetectInfo { pub path: Option<String>, pub version: Option<String>,
 
 // fsutil.rs
 pub fn write_atomic(path: &Path, content: &[u8]) -> anyhow::Result<()>;
+//   Creates parent dirs (mkdir -p), writes to a unique temp file in the same
+//   directory (name = ".{stem}.{pid}.{nanos}.tmp" via File::create_new for
+//   O_EXCL atomicity), chmod 0600 on the temp, then rename → dest. On any
+//   failure after temp creation, the temp file is unlinked before returning Err.
+pub fn expand_tilde(path: &str) -> anyhow::Result<PathBuf>;
+//   `~` and `~/...` → home_dir() + remainder. Errors if home dir unknown.
 
 // templates.rs — owns the §7 resolution chain end-to-end.
 pub fn load_templates() -> anyhow::Result<IndexMap<String, Template>>;
@@ -132,6 +138,7 @@ pub fn format_list_detect(detect: &IndexMap<String, DetectInfo>) -> String;
 | `indexmap` | Insertion-ordered map for templates and detect output | Stable JSON/iteration order without hand-serialization |
 | `signal-hook` | SIGINT/SIGTERM forwarding with safe pipe-based handlers | Calling `killpg` from a raw libc handler is async-signal-unsafe; signal-hook is the standard safe wrapper |
 | `wait-timeout` | `child.wait_timeout(d)` without a wait thread | Replaces hand-rolled Condvar + wait thread; ~200 LOC, no transitive deps |
+| `dirs` | `home_dir()` for `~` expansion and `$HOME` resolution | Mirrors Python `Path.home()` + `os.path.expanduser`; portable home lookup with passwd fallback on unix |
 
 No tokio, no tracing. All blocking I/O in main thread; subprocess I/O via `std::process::Command` + threads/`select` equivalent.
 
@@ -178,10 +185,10 @@ Behaviours preserved exactly:
 - `-f` rejects > 256 KiB (`error: file exceeds 256 KiB limit`); missing file → `error: file not found: <path>` (exit 1).
 - `--list` with no config falls back to detect-style printout (see `format_list_detect`); with config, uses `format_list` which groups by tier and shows `[✓]`/`[✗]` per agent.
 - `--show-config` prints layer (`user` / `project`) and resolved tiers/agents/env. **Requires a config file to exist; if none found, exit 1 with `error: no config file found. Run 'dispatch-agent init' to create one.`**
-- `--dry-run` makes `-p`/`-f` optional. With no prompt, the printed command substitutes the literal placeholder `<PROMPT>`.
+- `--dry-run` makes `-p`/`-f` optional. With no prompt, the printed command substitutes the literal placeholder `<prompt>` (lowercase, matching Python).
 - `--agent ID` not found in config → exit 1 + `error: agent 'ID' not found in config`. Bypasses tier traversal entirely (single attempt).
 - `--tier ID` not found → exit 1 + `error: tier 'ID' not found in config`. Otherwise: traversal starts at that tier and continues to subsequent tiers on failure.
-- Recursion guard: `DISPATCH_AGENT_DEPTH` parsed as int (unset/unparseable → 0). If current depth ≥ 5 → exit 1 + `error: recursion depth limit (5) reached`. Before spawning child, set the var to `current + 1` in the child's env only.
+- Recursion guard: `DISPATCH_AGENT_DEPTH` parsed as int. **Unset → 0. Unparseable** (e.g. `"abc"`) → exit 1 + `error: invalid DISPATCH_AGENT_DEPTH value 'abc': expected integer` (matches Python's `int()` raising `ValueError`; silently defaulting would defeat the guard if the env got corrupted). If current depth ≥ 5 → exit 1 + `error: recursion depth limit (5) reached`. Before spawning child, set the var to `current + 1` in the child's env only.
 - Per-agent process group (`setsid` via `pre_exec` on unix) so timeout/signal kills children.
 - SIGINT/SIGTERM forwarded to child group via `signal-hook` watcher thread, then dispatcher exits 1.
 - Verbose ticker every 10 s while child runs. `--verbose` also prints `[attempting <agent.id>]` before each attempt and `[<agent.id>] (tier: <tier.id>)` on success (matches Python). It does NOT change `--list`/`--show-config`/`--dry-run` output.
@@ -191,7 +198,12 @@ Behaviours preserved exactly:
 - Source env files wrapped in `bash -c 'set -a; source X; set +a; exec "$@"' -- <cmd>`. Hardcoded bash is intentional (parity with Python); do NOT shell-detect.
 - Mutex groups implemented via `clap::ArgGroup { multiple: false, required: false }` for `-p`/`-f` and `--tier`/`--agent`.
 - `verified = false` agents are skipped at dispatch with a stderr warning: `warning: agent 'ID' uses unverified template 'NAME', skipping`.
-- Template lookup per agent: `templates.get(agent.template.as_deref().unwrap_or(&agent.cli))`. Missing template → stderr warning, skip agent (does not abort tier).
+- Template lookup per agent: `templates.get(agent.template.as_deref().unwrap_or(&agent.cli))`. **Tier mode:** missing template → stderr warning, skip agent (does not abort tier). **`--agent` mode:** missing template → exit 1 + `error: template 'X' for agent 'Y' not found in cli-templates.toml` (no fallback exists, so this is a hard error, matching Python `dispatch.py:362-363`).
+- Tiers with zero agents are silently skipped (parity with Python).
+- Duplicate `agent.id` across the config: at load time emit a stderr warning `warning: multiple agents with id 'X', using first`; do NOT fail. Matches Python `dispatch.py:209-211`.
+- Config missing top-level `version` field: stderr warning `warning: config missing 'version' field, assuming v1` and proceed.
+- TOML loaders (`load_config` and `load_templates`) strip a leading UTF-8 BOM (`\u{FEFF}`) before calling `toml::from_str`. Mirrors Python's `tomllib`. CRLF is handled by the `toml` crate.
+- `~` expansion: `EnvEntry::File.path`, `EnvEntry::Source.path`, and the user config path all run through `dirs::home_dir()` + manual `~` strip. If `$HOME` is unset and we need it, exit 1 + `error: cannot determine home directory ($HOME not set)`.
 
 #### `config`
 ```
@@ -493,7 +505,7 @@ For each Python integration test under `tests/`, port the assertions into Rust i
 - **D7 Resolved:** use `signal-hook` on unix. Watcher thread runs `signal_hook::iterator::Signals` for SIGINT/SIGTERM, coordinates with the main thread through the `ChildState` mutex described in §6.1 (no raw signal handlers). Windows path is a no-op (dispatch is unix-only in v1).
 - **D8** Output of `detect` JSON: stable key order. **Resolved: use `indexmap::IndexMap` end-to-end** so template insertion order (and therefore `KNOWN_CLIS` order) is preserved automatically without hand-serialization.
 - **D9** `init`'s `DEFAULT_MODELS` — keep as Rust `const`? Or move into `cli-templates.toml` as a `default_model` field? — **Tentative: keep in code for parity; refactor in follow-up.**
-- **D10** Behaviour when required field is omitted in env entry of type `file`/`env` — Python KeyErrors. **Resolved: `EnvEntry` is a tagged enum so missing fields are caught at deserialize-time with a clear serde error.**
+- **D10 Resolved:** `EnvEntry` is a `#[serde(tag = "type", rename_all = "lowercase")]` tagged enum, so missing/unknown variants are caught at deserialize time. **However**, raw serde messages lack agent-id context. So `load_config` runs a post-deserialize validation pass that walks tiers→agents→env, wrapping any deserialize/validation failure with the agent id to produce Python-equivalent messages: `Error: agent 'X' has invalid env type 'Y'` and `Error: agent 'X' env entry of type 'file' missing 'path'`. Implemented either by parsing into `toml::Value` first then mapping into `EnvEntry`, or by catching the serde error path and re-emitting with context.
 - **D11** `init.rs` TOML emission. **Resolved: use `toml::to_string_pretty`** with `Serialize` derives on the types in `types.rs`. Existing tests assert parse-equivalence, not formatting parity, so we lose nothing and avoid hand-rolling `escape_toml_string`. Round-trip validation (re-parse the emitted TOML to `Config`) still runs before atomic rename.
 
 ---
