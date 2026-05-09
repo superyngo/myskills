@@ -184,7 +184,7 @@ dispatch-agent [--config PATH] <SUBCOMMAND>
 - Writes TOML to:
   - `<git-root>/.config/dispatch-agent.toml` if `save_location == "project"`
   - `~/.config/dispatch-agent.toml` otherwise
-- Prints destination path on success.
+- Prints destination path on stdout on success. Also prints stderr hint: `hint: run 'dispatch-agent config edit' to fine-tune your configuration`.
 - Validation parity: agent id regex `^[a-zA-Z0-9_-]+$`, unique ids, args is `Vec<String>`, env entries match one of `file`/`env`/`source`.
 - Atomic write to `*.tmp` in same dir + chmod 0600 + rename. Round-trip-validate generated TOML before rename.
 
@@ -226,9 +226,21 @@ Behaviours preserved exactly:
 dispatch-agent [--config PATH] config [edit | show | path]
 ```
 - `config` (no arg) → `edit`.
-- `edit` — resolve config path. If no config exists and `--config` was NOT given, exit 1 and suggest `dispatch-agent init` (per D3). If `--config PATH` was given and the path is missing, create an empty stub at PATH (user opted in by naming it). Open the resolved path with `$EDITOR`, then `$VISUAL`, then platform default (`vi` unix, `notepad` windows).
-- `show` — same output as `dispatch --show-config`, but requires only `config` subcommand (no `dispatch` semantics).
-- `path` — print resolved path (or non-zero exit + message if none found and `--config` not given). When `--config PATH` is given, print PATH literally even if the file doesn't exist (the user explicitly asked).
+- `edit` — resolve config path. If no config exists and `--config` was NOT given, exit 1 and suggest `dispatch-agent init` (per D3). If `--config PATH` was given and the path is missing, create a minimal stub: `version = 1\n# See cli-templates.toml for available templates and field reference.\n` (user opted in by naming the path).
+  - Editor resolution chain: `$EDITOR` → `$VISUAL` → platform default (`vi` on unix, `notepad` on windows). Empty / whitespace-only values are skipped.
+  - **`$EDITOR` splitting:** value is split on whitespace (`split_whitespace()`); the first token is the command, remaining tokens are prepended as args before the file path. Handles `code -w`, `vim +10`, `emacs -nw`. **No** shell expansion / glob / tilde — `$EDITOR` is trusted by convention (user-set in their own shell profile), and `Command::new` keeps us out of `sh -c` territory.
+  - After the editor exits: if the file's mtime is unchanged and exit code was 0, print stderr hint: `hint: your editor may have returned immediately. For GUI editors, set EDITOR to include a wait flag (e.g. 'code -w', 'subl -w')`.
+  - Then re-run `load_config` on the saved file. If TOML/validation fails, print `warning: config has syntax errors: <msg>` to stderr but exit 0 (the user chose to save it; a follow-up dispatch will re-surface the error).
+- `show` — uses the **identical** config-resolution + error-reporting code path as `dispatch --show-config` (shared via `dispatch::display::format_show_config` and a shared `resolve_or_error` helper). Error messages are guaranteed identical, not just output format.
+- `path` — print resolved path (or non-zero exit + message if none found and `--config` not given). On the no-config error path, also print the default search locations to stderr for discoverability:
+  ```
+  error: no config file found
+  hint: default locations searched:
+    <git-root>/.config/dispatch-agent.toml (project)
+    ~/.config/dispatch-agent.toml (user)
+  ```
+  When `--config PATH` is given, print PATH literally even if the file doesn't exist (the user explicitly asked).
+- **No `config init` subcommand.** Configuration initialization is the top-level `init` command (which reads JSON from stdin); `config edit` opens an existing config in an editor. The dual paths are intentional and distinct.
 - `--config PATH` overrides resolution. For `edit` with `--config PATH`, the path is created if missing (user opted in by naming it). Without `--config`, if no config exists, exit 1 and suggest `dispatch-agent init`. (No `--create` flag.)
 
 ---
@@ -470,7 +482,7 @@ Distribution-time concern is deferred; in this rewrite we ship source only and t
 
 - **Shell injection in source paths:** all `EnvEntry::Source.path` values are shell-quoted before interpolation into the `bash -c` wrapper (see §6). Without this, paths containing `'` are RCE.
 - **Symlink TOCTOU on temp files:** `write_atomic` uses `O_NOFOLLOW` so an attacker cannot redirect writes via a pre-placed symlink.
-- **`$EDITOR` injection:** `config edit` uses `Command::new($EDITOR)` (no shell), so `EDITOR='rm -rf /'` fails to spawn rather than executing a deletion. Documented for the avoidance of doubt.
+- **`$EDITOR` handling:** values are split on whitespace and passed to `Command::new(first).args(rest).arg(file_path)` — no shell expansion, no glob, no tilde processing. `$EDITOR` is inherently trusted (user-set in their own shell profile). No file lock is held during editing; a concurrent `dispatch` may see a partially-written config (intentional — advisory locks on user-editable files create more problems than they solve).
 - **TOML DoS:** the `toml` crate has no documented depth limit. Trusting `--config PATH` with attacker-controlled files is out of scope. cli-templates.toml is shipped data; user configs are user-controlled.
 - **Secret leakage in error messages:** env *values* (file contents, env var values) MUST NEVER appear in error messages, log lines, or `--show-config`/`--list` output. `anyhow` context strings include only paths and var names. Reviewer checklist item.
 - **Child stderr is forwarded as-is** to the dispatcher's stderr; if a child CLI prints a token in its own error output, that's parity with Python and unavoidable.
@@ -545,9 +557,13 @@ Tests set `DISPATCH_AGENT_TEMPLATES` to a fixture TOML registering `fake-agent` 
   - `--config` edge cases: relative path, `~`-prefixed path, path containing spaces, `--config /nonexistent` (clear error message).
   - `cli-templates.toml` validation test: `load_templates()` against the actual repo file, assert all original entries deserialise with equal field values, assert no entry has an unrecognised `file_input_mode`.
 - `config_cmd.rs`:
-  - `config path` outputs resolved path; non-zero when none.
-  - `config show` matches `dispatch --show-config`.
-  - `config edit` invokes `$EDITOR` with the right path (use a stub editor that writes a marker, assert file content + return 0).
+  - `config path` outputs resolved path; on no-config, exit non-zero AND stderr lists default search locations.
+  - `config show` matches `dispatch --show-config` byte-for-byte (snapshot).
+  - `config edit` invokes the editor with the right path (stub editor writes a marker, assert file content + return 0).
+  - `EDITOR="code -w"` correctly splits into `Command::new("code")` with args `["-w", path]` (unit test on the splitter helper).
+  - `EDITOR="  "` (whitespace-only) falls through to `$VISUAL` / platform default.
+  - Post-edit validation: stub editor writes invalid TOML; assert stderr contains `warning: config has syntax errors`; exit 0.
+  - Mtime-unchanged hint: stub editor returns immediately without modifying the file; assert stderr hint about GUI editors appears.
 
 ### Parity tests
 Golden files under `tests/fixtures/golden/` (generated by running the Python scripts on `tests/fixtures/inputs/` via `scripts/regen_golden.sh`). CI runs the regen script then `git diff --exit-code tests/fixtures/golden/` before `cargo test`. Covers: `detect` JSON, `init` TOML for canonical input, `dispatch --dry-run` stdout for single-agent config, `--list` formatted output. Concurrent rr-state correctness is **out of scope for this PR** (deferred to a dedicated lock-stress test PR; rationale: CI flake risk; `fs2` is already crate-tested).
