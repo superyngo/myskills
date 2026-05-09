@@ -101,11 +101,16 @@ pub struct DetectInfo { pub path: Option<String>, pub version: Option<String>,
 pub fn write_atomic(path: &Path, content: &[u8]) -> anyhow::Result<()>;
 //   Creates parent dirs (mkdir -p), writes to a unique temp file in the same
 //   directory (name = ".{stem}.{pid}.{nanos}.tmp" via File::create_new for
-//   O_EXCL atomicity), then rename → dest. On unix, mode 0600 is set atomically
-//   at creation time via OpenOptionsExt::mode(0o600) — matches Python's
-//   os.open(..., 0o600) and avoids the umask visibility window. An explicit
-//   chmod 0600 follows as defense-in-depth. On any failure after temp
-//   creation, the temp file is unlinked before returning Err.
+//   O_EXCL atomicity), then rename → dest. On unix:
+//     - mode 0600 set atomically at creation via OpenOptionsExt::mode(0o600)
+//       (matches Python os.open(...,0o600); no umask visibility window)
+//     - O_NOFOLLOW set via OpenOptionsExt::custom_flags(libc::O_NOFOLLOW) so a
+//       pre-placed symlink at the temp path causes ELOOP, not link-following
+//       (TOCTOU defense)
+//   An explicit chmod 0600 follows as defense-in-depth. On any failure after
+//   temp creation, the temp file is unlinked before returning Err. (A SIGKILL
+//   between create and rename can leave a 0600 .tmp behind; harmless — it'll
+//   be overwritten by the next attempt with a different nanos suffix.)
 pub fn expand_tilde(path: &str) -> anyhow::Result<PathBuf>;
 //   `~` and `~/...` → home_dir() + remainder. Errors if home dir unknown.
 
@@ -199,14 +204,14 @@ Behaviours preserved exactly:
 - `--dry-run` makes `-p`/`-f` optional. With no prompt, the printed command substitutes the literal placeholder `<prompt>` (lowercase, matching Python).
 - `--agent ID` not found in config → exit 1 + `error: agent 'ID' not found in config`. Bypasses tier traversal entirely (single attempt).
 - `--tier ID` not found → exit 1 + `error: tier 'ID' not found in config`. Otherwise: traversal starts at that tier and continues to subsequent tiers on failure.
-- Recursion guard: `DISPATCH_AGENT_DEPTH` parsed as int. **Unset → 0. Unparseable** (e.g. `"abc"`) → exit 1 + `error: invalid DISPATCH_AGENT_DEPTH value 'abc': expected integer` (matches Python's `int()` raising `ValueError`; silently defaulting would defeat the guard if the env got corrupted). If current depth ≥ 5 → exit 1 + `error: recursion depth limit (5) reached`. Before spawning child, set the var to `current + 1` in the child's env only.
+- Recursion guard: `DISPATCH_AGENT_DEPTH` parsed via `.trim().parse::<i64>()` (matches Python's `int()` which strips whitespace; tolerates trailing `\n` from `echo`-set values). **Unset → 0. Unparseable** (e.g. `"abc"`) → exit 1 + `error: invalid DISPATCH_AGENT_DEPTH value 'abc': expected integer` (silently defaulting would defeat the guard if the env got corrupted). If current depth ≥ 5 → exit 1 + `error: recursion depth limit (5) reached`. Before spawning child, set the var to `current + 1` in the child's env only.
 - Per-agent process group (`setsid` via `pre_exec` on unix) so timeout/signal kills children.
 - SIGINT/SIGTERM forwarded to child group via `signal-hook` watcher thread, then dispatcher exits 1.
 - Verbose ticker every 10 s while child runs. `--verbose` also prints `[attempting <agent.id>]` before each attempt and `[<agent.id>] (tier: <tier.id>)` on success (matches Python). It does NOT change `--list`/`--show-config`/`--dry-run` output.
 - `failure code == -SIGKILL` reported as `timeout` in the failure summary.
 - **Exit code propagation:** on the success branch, dispatcher exits with the child's exit code (0 if child returned 0; otherwise the child's code is treated as failure and triggers fallback). All-agents-failed → exit 1. (Python's behaviour: a non-zero child rc triggers fallback, so "success" here means child rc == 0; dispatcher exit 0 on success.)
 - rr-state file `~/.cache/dispatch-agent/rr-state.json`. If missing, treat as `{}`; create parent dirs on first write. Advisory exclusive lock held during read+mutate+write; pointer updated **only on success**.
-- Source env files wrapped in `bash -c 'set -a; source X; set +a; exec "$@"' -- <cmd>`. Hardcoded bash is intentional (parity with Python); do NOT shell-detect.
+- Source env files wrapped in **a single** `bash -c 'set -a; source A; source B; ...; set +a; exec "$@"' -- <cmd>` (one bash layer, not nested). Each `path` is shell-quoted via `shell_quote(s) = "'" + s.replace("'", "'\\''") + "'"` before interpolation — **mandatory** to prevent shell injection from paths containing `'`, `$`, backticks, or spaces (e.g. `/home/alice/d'ev/env`). Helper lives in `dispatch/command.rs`. Hardcoded bash is intentional (parity with Python `shlex.quote`); do NOT shell-detect.
 - Mutex groups implemented via `clap::ArgGroup { multiple: false, required: false }` for `-p`/`-f` and `--tier`/`--agent`.
 - `verified = false` agents are skipped at dispatch with a stderr warning: `warning: agent 'ID' uses unverified template 'NAME', skipping`.
 - Template lookup per agent: `templates.get(agent.template.as_deref().unwrap_or(&agent.cli))`. **Tier mode:** missing template → stderr warning, skip agent (does not abort tier). **`--agent` mode:** missing template → exit 1 + `error: template 'X' for agent 'Y' not found in cli-templates.toml` (no fallback exists, so this is a hard error, matching Python `dispatch.py:362-363`).
@@ -436,7 +441,7 @@ Failure-label precedence: `interrupted` > `killed_by_timeout` > raw exit code.
 Match Python's `fcntl.flock` cadence (NOT held during child execution):
 1. Before the dispatch loop: brief exclusive lock → read JSON → unlock. Use this snapshot to pick the round-robin starting agent.
 2. On a successful child exit: brief exclusive lock → re-read JSON (pick up concurrent writers) → mutate the tier's pointer → atomic-rename write → unlock.
-On read failure (missing file / parse error): treat as `{}`. Parent dirs are created on first write (via `fsutil::write_atomic`).
+On read: distinguish `io::ErrorKind::NotFound` (silent `{}`, first-run case) from `ErrorKind::PermissionDenied` (emit `warning: cannot read rr-state at <path>: permission denied` and treat as `{}` — most likely cause is a previous run as root chowning the file). Parse errors also warn. Other I/O errors warn similarly. Parent dirs are created on first write via `fsutil::write_atomic`. **Operational note:** running `dispatch-agent dispatch` under `sudo` is unsupported — it will create a root-owned state file that breaks subsequent unprivileged runs (mitigated by the warning above so the user can `chown` it back).
 
 **Coexistence guarantee:** `fs2::FileExt::lock_exclusive` wraps `flock(LOCK_EX)` on Linux and macOS — same syscall as Python's `fcntl.flock`. A Python and a Rust dispatcher running side-by-side during migration contend correctly on the same advisory lock.
 
@@ -460,6 +465,15 @@ Python uses `__file__`. For a compiled binary we resolve in this order:
 Distribution-time concern is deferred; in this rewrite we ship source only and tests use option (1).
 
 ---
+
+## 7.1 Security notes
+
+- **Shell injection in source paths:** all `EnvEntry::Source.path` values are shell-quoted before interpolation into the `bash -c` wrapper (see §6). Without this, paths containing `'` are RCE.
+- **Symlink TOCTOU on temp files:** `write_atomic` uses `O_NOFOLLOW` so an attacker cannot redirect writes via a pre-placed symlink.
+- **`$EDITOR` injection:** `config edit` uses `Command::new($EDITOR)` (no shell), so `EDITOR='rm -rf /'` fails to spawn rather than executing a deletion. Documented for the avoidance of doubt.
+- **TOML DoS:** the `toml` crate has no documented depth limit. Trusting `--config PATH` with attacker-controlled files is out of scope. cli-templates.toml is shipped data; user configs are user-controlled.
+- **Secret leakage in error messages:** env *values* (file contents, env var values) MUST NEVER appear in error messages, log lines, or `--show-config`/`--list` output. `anyhow` context strings include only paths and var names. Reviewer checklist item.
+- **Child stderr is forwarded as-is** to the dispatcher's stderr; if a child CLI prints a token in its own error output, that's parity with Python and unavoidable.
 
 ## 8. Error handling & exit codes
 
@@ -494,7 +508,8 @@ Tests set `DISPATCH_AGENT_TEMPLATES` to a fixture TOML registering `fake-agent` 
 ### Unit tests (in-source `#[cfg(test)]`)
 - `validate_agent_id`, `validate_unique_ids`.
 - `Template::build_command` matrix: positional vs flag, with/without subcommand, default vs explicit model, model with no model_flag (warn emitted), extra_args ordering.
-- `wrap_with_sources` argv shape.
+- `wrap_with_sources` argv shape — including a path containing `'`, `$`, backtick, and a space; assert the resulting `bash -c` string is syntactically valid (re-parse via `shlex` or by piping to `bash -n`). Also test the multiple-source-files case (single bash layer, not nested).
+- `shell_quote` direct unit tests for empty string, plain ascii, single-quote, dollar, backtick, space, embedded newline.
 - `find_config` with tempdir + fake git root.
 - rr-state load/save round trip.
 - `expand_tilde` on `~`, `~/foo`, `/abs`, relative path, empty path.
