@@ -50,11 +50,20 @@ skills/dispatch-agent/
       rr_state.rs       # round-robin state load/store with file lock
       fsutil.rs         # write_atomic (mkdir-p, temp, chmod 0600, rename)
     tests/
+      bin/
+        fake_agent.rs       # subprocess test harness (FAKE_AGENT_MODE env)
+      fixtures/
+        inputs/             # canonical inputs used by golden-file tests
+        golden/             # Python-generated expected outputs (parity)
+      snapshots/            # insta snapshot files (committed)
       detect.rs
       init.rs
       dispatch.rs
       config_cmd.rs
-  scripts/              # untouched in this rewrite
+    scripts/
+      regen_golden.sh       # regenerate fixtures/golden/ from Python
+      parity_check.sh       # run Python + Rust on each fixture, diff outputs
+  scripts/              # Python scripts — untouched in this rewrite
   data/cli-templates.toml  # rewritten with comments
 ```
 
@@ -66,7 +75,7 @@ Binary name: `dispatch-agent` (set via `[[bin]]` in Cargo.toml). Pre-built artif
 main.rs        → cli, detect, init, dispatch::mod, config_cmd
 detect.rs      → templates, types
 init.rs        → types, fsutil, config (find_git_root)
-dispatch/mod   → types, templates, env, rr_state, fsutil, dispatch::{command,process,display}
+dispatch/mod   → types, templates, env, rr_state, fsutil, detect (for --list no-config), dispatch::{command,process,display}
 config_cmd.rs  → config, types, templates, dispatch::display
 env.rs         → types
 rr_state.rs    → fsutil, types
@@ -93,7 +102,12 @@ pub struct Template { pub detect_binary: Option<String>, pub subcommand: Option<
                       pub prompt_flag: Option<String>, pub prompt_positional: bool,
                       pub model_flag: Option<String>, pub extra_args: Vec<String>,
                       pub version_flag: Option<String>, pub file_input_mode: Option<FileInputMode>,
-                      pub verified: bool /* default true */ }
+                      pub verified: bool }
+//   Field defaults applied via serde:
+//     #[serde(default)]            on prompt_positional, extra_args, etc.
+//     #[serde(default = "true_fn")] on `verified` (helper fn returning true)
+//   `version_flag = Some("--version")` default applied at use-site (templates.rs
+//   load helper), not in serde — easier than a tagged literal default.
 pub struct DetectInfo { pub path: Option<String>, pub version: Option<String>,
                         pub callable: bool, pub verified: bool }
 
@@ -125,6 +139,27 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config>;
 // dispatch/command.rs
 impl Template { pub fn build_command(&self, agent: &Agent, prompt: &str) -> Option<Vec<String>>; }
 pub fn wrap_with_sources(cmd: Vec<String>, sources: &[String]) -> Vec<String>;
+pub(crate) fn shell_quote(s: &str) -> String;  // single-quote with `'` → `'\''`
+
+// detect.rs
+pub fn run_detect(templates: &IndexMap<String, Template>) -> IndexMap<String, DetectInfo>;
+//   Pure function: probes PATH for each template's detect_binary, optionally
+//   runs `--version`, applies `verified` flag. Used by both the `detect`
+//   subcommand AND `dispatch --list` no-config fallback.
+
+// env.rs
+pub fn resolve_env_var(ev: &EnvEntry) -> Option<(String, String)>;  // None for Source variant
+pub fn get_source_files(agent: &Agent) -> Vec<String>;              // expanded paths
+pub fn build_env(agent: &Agent, current_depth: i64) -> HashMap<String, String>;
+//   Inherits parent env, overlays resolved (non-source) entries, sets
+//   DISPATCH_AGENT_DEPTH = current_depth + 1.
+
+// rr_state.rs
+pub fn load_rr_state(path: &Path) -> IndexMap<String, String>;
+//   Returns {} on NotFound (silent); warns and returns {} on PermissionDenied
+//   or parse error. tier_id → next-agent-id.
+pub fn store_rr_state(path: &Path, state: &IndexMap<String, String>) -> anyhow::Result<()>;
+//   Atomic write via fsutil::write_atomic.
 
 // dispatch/display.rs — pure functions, return formatted String for testability.
 pub fn format_list(config: &Config) -> String;
@@ -149,7 +184,8 @@ pub fn format_list_detect(detect: &IndexMap<String, DetectInfo>) -> String;
 | `fs2` | `flock` for rr-state lock file | Cross-platform advisory lock |
 | `indexmap` | Insertion-ordered map for templates and detect output | Stable JSON/iteration order without hand-serialization |
 | `signal-hook` | SIGINT/SIGTERM forwarding with safe pipe-based handlers | Calling `killpg` from a raw libc handler is async-signal-unsafe; signal-hook is the standard safe wrapper |
-| `wait-timeout` | `child.wait_timeout(d)` without a wait thread | Replaces hand-rolled Condvar + wait thread; ~200 LOC, no transitive deps |
+| `wait-timeout` | `child.wait_timeout(d)` without a wait thread | Replaces hand-rolled Condvar + wait thread; small, reuses `libc` already in tree |
+| `libc` | `O_NOFOLLOW`, `setsid`, `killpg`, `flock` direct syscalls on unix | Direct dep needed by `fsutil.rs` and `dispatch/process/unix.rs` independent of `signal-hook`'s transitive use |
 | `dirs` | `home_dir()` for `~` expansion and `$HOME` resolution | Mirrors Python `Path.home()` + `os.path.expanduser`; portable home lookup with passwd fallback on unix |
 | `insta` (dev) | Snapshot tests for formatted output | Catches whitespace and truncation bugs that `contains()` asserts miss |
 | `proptest` (dev) | Property tests for `build_command` invariants | Generates pathological template/agent combinations the example tests miss |
@@ -219,7 +255,9 @@ Behaviours preserved exactly:
 - Duplicate `agent.id` across the config: at load time emit a stderr warning `warning: multiple agents with id 'X', using first`; do NOT fail. Matches Python `dispatch.py:209-211`.
 - Config missing top-level `version` field: stderr warning `warning: config missing 'version' field, assuming v1` and proceed.
 - TOML loaders (`load_config` and `load_templates`) strip a leading UTF-8 BOM (`\u{FEFF}`) before calling `toml::from_str`. Mirrors Python's `tomllib`. CRLF is handled by the `toml` crate.
-- `~` expansion: `EnvEntry::File.path`, `EnvEntry::Source.path`, and the user config path all run through `dirs::home_dir()` + manual `~` strip. If `$HOME` is unset and we need it, exit 1 + `error: cannot determine home directory ($HOME not set)`.
+- `~` expansion applies to: `EnvEntry::File.path`, `EnvEntry::Source.path`, the user config path, AND `--config PATH` values. All routed through `fsutil::expand_tilde` (`dirs::home_dir()` + manual `~` strip). If `$HOME` is unset and we need it, exit 1 + `error: cannot determine home directory ($HOME not set)`.
+- **No-config dispatch:** if no config is found AND the invocation is a real dispatch (not `--list`/`--dry-run`/`--show-config`/`--help`), exit 1 with `error: no config file found. Run 'dispatch-agent init' to create one.` (mirrors the `--show-config` path; gives users guidance instead of cryptic "all agents failed").
+- **Per-agent processing order in tier mode:** for each candidate (1) resolve template via `agent.template.unwrap_or(agent.cli)`; if absent, warn and skip; (2) check `template.verified`; if false, warn and skip; (3) `build_command`; if `None`, warn and skip; (4) `wrap_with_sources`; (5) `build_env`; (6) spawn.
 
 #### `config`
 ```
@@ -527,7 +565,7 @@ Tests set `DISPATCH_AGENT_TEMPLATES` to a fixture TOML registering `fake-agent` 
 - `find_config` with tempdir + fake git root.
 - rr-state load/save round trip.
 - `expand_tilde` on `~`, `~/foo`, `/abs`, relative path, empty path.
-- BOM stripping: pass `\u{FEFF}version = 1` to the load_config internal parse helper, assert success.
+- BOM stripping: pass `\u{FEFF}version = 1` to the shared TOML load helper, assert success. Same helper underpins both `load_config` and `load_templates`, so one test covers both.
 
 ### Integration tests (`rust/tests/*.rs`)
 - `init.rs`:
@@ -538,6 +576,7 @@ Tests set `DISPATCH_AGENT_TEMPLATES` to a fixture TOML registering `fake-agent` 
   - Agent id failing regex → exit 1, stderr contains the failing id.
   - Duplicate agent ids → exit 1 (init fails fast; dispatch only warns).
   - `env` entry of type `file` with no `path` → exit 1, stderr names the agent.
+  - Successful init also prints stderr hint containing `config edit`.
 - `detect.rs`: with `DISPATCH_AGENT_TEMPLATES` pointing at a fixture and `PATH` rigged with `tempdir` containing fake binaries, assert JSON output.
 - `dispatch.rs`:
   - `--dry-run` happy path prints expected command.
