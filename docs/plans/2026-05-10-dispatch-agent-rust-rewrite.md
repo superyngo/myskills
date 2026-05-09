@@ -38,10 +38,13 @@ skills/dispatch-agent/
       detect.rs         # detect subcommand
       init.rs           # init subcommand (stdin JSON → TOML)
       dispatch/
-        mod.rs          # subcommand entry, tier traversal, rr-state mutation
-        command.rs      # build_command + wrap_with_sources (argv construction)
-        process.rs      # spawn, process group, signal forwarding, timeout, verbose tick
-        display.rs      # format_list, format_show_config (shared with config_cmd)
+        mod.rs            # subcommand entry, tier traversal, rr-state mutation
+        command.rs        # build_command + wrap_with_sources (argv construction)
+        display.rs        # format_list, format_show_config (shared with config_cmd)
+        process/
+          mod.rs          # spawn, pipe threads, wait loop, verbose ticker, ChildState FSM
+          unix.rs         # #[cfg(unix)]: setsid, killpg, signal_hook setup
+          windows.rs      # #[cfg(windows)]: stub returning "dispatch is unix-only" error
       config_cmd.rs     # config subcommand (edit / show / path); editor inlined
       env.rs            # resolve_env_var, get_source_files, build_env
       rr_state.rs       # round-robin state load/store with file lock
@@ -98,8 +101,11 @@ pub struct DetectInfo { pub path: Option<String>, pub version: Option<String>,
 pub fn write_atomic(path: &Path, content: &[u8]) -> anyhow::Result<()>;
 //   Creates parent dirs (mkdir -p), writes to a unique temp file in the same
 //   directory (name = ".{stem}.{pid}.{nanos}.tmp" via File::create_new for
-//   O_EXCL atomicity), chmod 0600 on the temp, then rename → dest. On any
-//   failure after temp creation, the temp file is unlinked before returning Err.
+//   O_EXCL atomicity), then rename → dest. On unix, mode 0600 is set atomically
+//   at creation time via OpenOptionsExt::mode(0o600) — matches Python's
+//   os.open(..., 0o600) and avoids the umask visibility window. An explicit
+//   chmod 0600 follows as defense-in-depth. On any failure after temp
+//   creation, the temp file is unlinked before returning Err.
 pub fn expand_tilde(path: &str) -> anyhow::Result<PathBuf>;
 //   `~` and `~/...` → home_dir() + remainder. Errors if home dir unknown.
 
@@ -144,6 +150,8 @@ pub fn format_list_detect(detect: &IndexMap<String, DetectInfo>) -> String;
 | `proptest` (dev) | Property tests for `build_command` invariants | Generates pathological template/agent combinations the example tests miss |
 
 No tokio, no tracing. All blocking I/O in main thread; subprocess I/O via `std::process::Command` + threads/`select` equivalent.
+
+**MSRV:** `rust-version = "1.77"` (for `File::create_new`). All deps compile cleanly under both `x86_64-unknown-linux-gnu` (glibc ≥ 2.17) and `x86_64-unknown-linux-musl`. CI matrix targets glibc by default; musl static builds are deferred to the distribution PR. No glibc-specific assumptions exist anywhere in the dependency tree.
 
 ---
 
@@ -398,7 +406,9 @@ Python uses `select` on stdout+stderr fds. Rust port (unix only):
 - Two reader threads: one drains stdout → host stdout (calling `flush()` after each write to avoid buffering visible hangs), one drains stderr into a `Vec<u8>` buffer behind a `Mutex`.
 - Main thread blocks on `child.wait_timeout(duration)` (see D6 below).
 - Verbose ticker thread: parks 10 s at a time, prints `[waiting: <id> — Ns elapsed]` to stderr; checks an `AtomicBool` shutdown flag each wakeup.
-- **Thread join order after wait returns:** (1) set ticker shutdown flag and unpark, (2) `child.kill()` if still alive (cleanup safety), (3) join both reader threads (their pipes will EOF as the child is reaped), (4) join ticker thread, (5) consume stderr buffer for the failure summary.
+- **Thread join order after wait returns:** (1) set ticker shutdown flag and unpark, (2) `child.kill()` if still alive (cleanup safety), (3) join both reader threads (their pipes will EOF as the child is reaped), (4) join ticker thread, (5) consume stderr buffer for the failure summary. Stderr `Vec<u8>` → `String` via `String::from_utf8_lossy()` (matches Python's `errors='replace'`). Stdout reader writes raw `&[u8]` straight to `io::stdout().write_all()` — no UTF-8 validation. All pipe handles and the `Child` are dropped at the end of each attempt; no FDs survive across fallback iterations.
+- **`wait_timeout` return handling:** `Ok(Some(status))` → child exited; `Ok(None)` → timeout (trigger kill path); `Err` → wait failure, treat as `Ok(Some(status))` (proceed to reap and inspect — should never occur in practice).
+- **Signal handler scope:** signal-hook `Signals` iterator is registered ONLY inside `dispatch/mod.rs` entry, dropped on dispatch exit. Never installed in `main.rs`, `config_cmd.rs`, or any other subcommand path — otherwise `config edit`'s spawned editor would have its SIGINT intercepted.
 
 ### 6.1 Child lifecycle state machine
 
@@ -427,6 +437,8 @@ Match Python's `fcntl.flock` cadence (NOT held during child execution):
 1. Before the dispatch loop: brief exclusive lock → read JSON → unlock. Use this snapshot to pick the round-robin starting agent.
 2. On a successful child exit: brief exclusive lock → re-read JSON (pick up concurrent writers) → mutate the tier's pointer → atomic-rename write → unlock.
 On read failure (missing file / parse error): treat as `{}`. Parent dirs are created on first write (via `fsutil::write_atomic`).
+
+**Coexistence guarantee:** `fs2::FileExt::lock_exclusive` wraps `flock(LOCK_EX)` on Linux and macOS — same syscall as Python's `fcntl.flock`. A Python and a Rust dispatcher running side-by-side during migration contend correctly on the same advisory lock.
 
 ### Env injection
 `build_env(agent, depth)`:
