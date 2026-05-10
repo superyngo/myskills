@@ -368,8 +368,11 @@ mod tests {
         fn prompt_appears_at_most_once(
             tmpl in arb_template(),
             agent in arb_agent(),
-            prompt in ".{1,20}"
+            // Use a sentinel prefix guaranteed not to appear in generated binary
+            // names or extra_args (which are arbitrary strings with no such prefix).
+            suffix in "[a-z]{4,12}"
         ) {
+            let prompt = format!("__PROMPT_SENTINEL__{suffix}");
             if let Some(cmd) = tmpl.build_command(&agent, &prompt) {
                 let count = cmd.iter().filter(|s| s.as_str() == prompt).count();
                 assert!(count <= 1, "prompt appeared {} times in {:?}", count, cmd);

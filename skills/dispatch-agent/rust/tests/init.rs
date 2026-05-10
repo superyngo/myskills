@@ -64,8 +64,10 @@ fn canonical_init() {
 
 #[test]
 fn invalid_json() {
+    let dir = TempDir::new().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_dispatch-agent"))
         .arg("init")
+        .env("HOME", dir.path())
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

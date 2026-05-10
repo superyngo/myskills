@@ -271,6 +271,7 @@ fn fake_agent_exit_nonzero() {
         .output()
         .expect("failed to run dispatch-agent");
 
-    // Dispatcher should exit 1 after exhausting all tiers, not 42
+    // Dispatcher normalizes to exit 1 after exhausting all tiers; it does not
+    // propagate the child's raw exit code (42) to avoid leaking agent internals.
     assert_eq!(out.status.code(), Some(1));
 }

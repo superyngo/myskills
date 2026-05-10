@@ -4,4 +4,3 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 191014c6472f060426ae087ee0b8a94e83a267313f1383de0f06eb3a9e5f2b04 # shrinks to tmpl = Template { detect_binary: None, subcommand: None, prompt_flag: Some("🌀"), prompt_positional: false, model_flag: None, extra_args: [], version_flag: None, file_input_mode: None, verified: true }, agent = Agent { id: "", cli: "", model: None, args: [], env: [], template: None }, prompt = ""
