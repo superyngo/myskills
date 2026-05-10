@@ -25,10 +25,8 @@ impl Template {
 
         let mut cmd = vec![binary];
 
-        if let Some(ref sub) = self.subcommand {
-            if !sub.is_empty() {
-                cmd.push(sub.clone());
-            }
+        if let Some(sub) = self.subcommand.as_deref().filter(|s| !s.is_empty()) {
+            cmd.push(sub.to_owned());
         }
 
         cmd.extend(self.extra_args.iter().cloned());
