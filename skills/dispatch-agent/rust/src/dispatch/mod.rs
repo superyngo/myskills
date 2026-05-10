@@ -117,8 +117,7 @@ pub fn cmd_dispatch(args: &DispatchArgs, config_path: Option<&Path>) -> anyhow::
         Some(path) => load_config(&path)?,
         None => {
             if args.dry_run {
-                let _ = read_prompt(args)?;
-                eprintln!("warning: no config file found, no agents to dispatch");
+                // --dry-run is explicitly exempted from the no-config exit-1 rule
                 return Ok(());
             }
             eprintln!("error: no config file found. Run 'dispatch-agent init' to create one.");
@@ -224,7 +223,7 @@ fn dispatch_single(
 
     if !template.verified {
         eprintln!(
-            "warning: agent '{}' uses unverified template '{}', skipping",
+            "error: agent '{}' uses unverified template '{}'; cannot dispatch",
             agent.id, tmpl_name
         );
         std::process::exit(1);
@@ -234,7 +233,7 @@ fn dispatch_single(
         Some(c) => c,
         None => {
             eprintln!(
-                "warning: agent '{}' has no prompt delivery method, skipping",
+                "error: agent '{}' has no prompt delivery method configured",
                 agent.id
             );
             std::process::exit(1);
