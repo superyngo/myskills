@@ -1,4 +1,5 @@
-use std::eprintln;
+#![allow(dead_code)]
+
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -6,12 +7,10 @@ use anyhow::Result;
 use fs2::FileExt;
 use indexmap::IndexMap;
 
-#[allow(dead_code)]
 fn lock_file_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.lock", path.display()))
 }
 
-#[allow(dead_code)]
 fn acquire_lock(path: &Path) -> Result<File> {
     let lock_path = lock_file_path(path);
     if let Some(parent) = lock_path.parent() {
@@ -22,12 +21,11 @@ fn acquire_lock(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-#[allow(dead_code)]
 pub fn load_rr_state(path: &Path) -> IndexMap<String, String> {
     let _lock = match acquire_lock(path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("warning: cannot acquire lock for rr-state: {e}");
+            eprintln!("warning: cannot lock rr-state at {}: {e}", path.display());
             return IndexMap::new();
         }
     };
@@ -60,7 +58,6 @@ pub fn load_rr_state(path: &Path) -> IndexMap<String, String> {
     // _lock dropped here → unlock
 }
 
-#[allow(dead_code)]
 pub fn store_rr_state(path: &Path, state: &IndexMap<String, String>) -> Result<()> {
     let _lock = acquire_lock(path)?;
     let json = serde_json::to_string_pretty(state)?;
@@ -126,8 +123,8 @@ mod tests {
                 let loaded = load_rr_state(&path_clone);
                 // Must always be valid JSON (either empty or containing our keys)
                 if !loaded.is_empty() {
-                    let _ = loaded.get("counter").unwrap();
-                    let _ = loaded.get("agent").unwrap();
+                    assert!(loaded.contains_key("counter"), "missing 'counter'");
+                    assert!(loaded.contains_key("agent"), "missing 'agent'");
                 }
             }
         });
