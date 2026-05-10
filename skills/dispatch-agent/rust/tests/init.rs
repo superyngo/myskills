@@ -40,11 +40,12 @@ fn canonical_init() {
         config_path.display()
     );
 
-    // Should be valid TOML
+    // Should be valid TOML with a version field
     let content = fs::read_to_string(&config_path).unwrap();
+    let parsed: toml::Value = toml::from_str(&content).expect("config should be valid TOML");
     assert!(
-        content.contains("version"),
-        "config should contain version field"
+        parsed.get("version").is_some(),
+        "config should have version field, got: {content}"
     );
 
     // On unix: file mode should be 0600

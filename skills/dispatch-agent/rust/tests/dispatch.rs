@@ -56,8 +56,14 @@ fn dry_run_happy_path() {
 
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Should contain the fake-agent template name or the built command
-    assert!(stdout.contains("fake-agent") || stdout.contains("-p hello"));
+    assert!(
+        stdout.contains("fake-agent") || stdout.contains("fake_agent"),
+        "stdout should contain agent name, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("-p") && stdout.contains("hello"),
+        "stdout should contain prompt flag and value, got: {stdout}"
+    );
 }
 
 #[test]
@@ -121,8 +127,14 @@ fn list_with_config() {
 
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Should show agents from config
-    assert!(stdout.contains("fake-default") || stdout.contains("primary"));
+    assert!(
+        stdout.contains("fake-default"),
+        "stdout should contain agent id, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("primary"),
+        "stdout should contain tier id, got: {stdout}"
+    );
 }
 
 #[test]
@@ -201,12 +213,13 @@ fn tier_not_found() {
 
 #[test]
 fn recursion_guard() {
+    let dir = TempDir::new().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_dispatch-agent"))
         .arg("dispatch")
         .arg("-p")
         .arg("test")
         .env("DISPATCH_AGENT_DEPTH", "5")
-        .env("HOME", "/tmp")
+        .env("HOME", dir.path())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .output()
         .expect("failed to run dispatch-agent");
