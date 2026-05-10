@@ -1,5 +1,5 @@
 {
-  "save_location": "user",
+  "save_location": "project",
   "tier_order": ["primary"],
   "agents": [
     {

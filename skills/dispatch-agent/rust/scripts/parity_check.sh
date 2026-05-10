@@ -23,6 +23,7 @@ check() {
   local name="$1"
   local actual="$2"
   local golden="$3"
+  # note: echo appends a newline; golden files are also newline-terminated
   if diff <(echo "$actual") <(cat "$golden") > /dev/null 2>&1; then
     echo "PASS: $name"
     PASS=$((PASS + 1))
@@ -44,8 +45,6 @@ DETECT_OUT=$(DISPATCH_AGENT_TEMPLATES="tests/fixtures/inputs/fake-detect-templat
 check "detect JSON" "$DETECT_OUT" "tests/fixtures/golden/detect_output.json"
 
 # Check init output
-TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
 OUTPUT_PATH=$("$BINARY" init < tests/fixtures/inputs/init_canonical.json 2>/dev/null)
 INIT_OUT=$(cat "$OUTPUT_PATH")
 rm -f "$OUTPUT_PATH"

@@ -22,10 +22,8 @@ DISPATCH_AGENT_TEMPLATES="tests/fixtures/inputs/fake-detect-templates.toml" \
 
 # Generate init golden output
 echo "Generating init golden output..."
-TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
 
-# Run init with canonical input, writing to temp file
+# Run init with canonical input
 OUTPUT_PATH=$("$BINARY" init < tests/fixtures/inputs/init_canonical.json 2>/dev/null)
 # Read the generated TOML and save to golden
 cat "$OUTPUT_PATH" > tests/fixtures/golden/init_output.toml
