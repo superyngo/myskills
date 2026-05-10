@@ -1,0 +1,12 @@
+/Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/deps/serde-3b831d2a03ad14c2.d: /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/build/serde-1d84d94038952bdb/out/private.rs
+
+/Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/deps/libserde-3b831d2a03ad14c2.rmeta: /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/build/serde-1d84d94038952bdb/out/private.rs
+
+/Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Volumes/Home/Users/wen/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/build/serde-1d84d94038952bdb/out/private.rs:
+
+# env-dep:OUT_DIR=/Volumes/Home/Users/wen/.local/share/agm/source/myskills/skills/dispatch-agent/rust/target/debug/build/serde-1d84d94038952bdb/out

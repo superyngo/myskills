@@ -172,3 +172,66 @@ TIER primary
 ## Recursion Guard
 
 `DISPATCH_AGENT_DEPTH` env var tracks dispatch nesting. Set to 0 by default, incremented before each subprocess call. At depth >= 5, dispatch exits with error. Prevents infinite recursion when an agent dispatches back to dispatch-agent.
+
+---
+
+## Annotated Configuration Reference
+
+The following is a fully-annotated `dispatch-agent.toml` example. This is your personal dispatch configuration (not the templates file).
+
+```toml
+# =====================================================================
+# dispatch-agent.toml — your personal dispatch configuration.
+# Tier traversal is in TOML order; agents within a tier round-robin.
+# =====================================================================
+
+version = 1                       # schema version (currently 1)
+
+[[tiers]]
+id = "primary"                    # tier label; arbitrary string
+
+  [[tiers.agents]]
+  id = "claude-default"           # unique across all agents; [a-zA-Z0-9_-] only
+  cli = "claude"                  # MUST match a top-level key in cli-templates.toml
+  # template = "claude"           # OPTIONAL override of which template to use;
+                                  # falls back to `cli` when omitted (used when two
+                                  # agents share a binary but differ in args/model).
+  model = "default"               # "default" → omit the model_flag entirely
+  args = ["--dangerously-skip-permissions"]
+                                  # appended AFTER template.extra_args; see template
+                                  # docs for the full command shape.
+
+    [[tiers.agents.env]]          # env injection (zero or more entries per agent)
+    type = "file"                 # read file contents → set env var <name>
+    name = "GITHUB_TOKEN"
+    path = "~/.config/gh/token"
+
+    [[tiers.agents.env]]
+    type = "env"                  # forward an env var from the parent shell
+    name = "OPENAI_API_KEY"
+    var = "OPENAI_API_KEY"        # name in the PARENT shell's environment
+
+    [[tiers.agents.env]]
+    type = "source"               # source a shell env file inside a bash wrapper
+    path = "~/.zshrc.d/zclaude.env"
+                                  # NOTE: name/var fields are not used for `source`;
+                                  # the file is loaded via `set -a; source X; set +a`
+                                  # so every assignment becomes an exported var.
+
+[[tiers]]
+id = "fallback"
+
+  [[tiers.agents]]
+  id = "gemini-npx-default"
+  cli = "gemini-npx"              # uses the gemini-npx template (binary = npx)
+  model = "default"
+  args = []
+```
+
+---
+
+## Future: Rust binary
+
+A Rust rewrite of the dispatch-agent is in progress. See
+`docs/plans/2026-05-10-dispatch-agent-rust-rewrite.md` for the full rollout plan.
+The binary will be available as an opt-in in PR 2 via `DISPATCH_AGENT_USE_RUST=1`.
