@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-05-10 — feat(rust): implement rr_state.rs (load_rr_state, store_rr_state)
+
+- `skills/dispatch-agent/rust/src/rr_state.rs`: Implements round-robin state persistence with file-based locking (fs2 sidecar lock), JSON serialization via IndexMap, and graceful error handling (NotFound → empty, PermissionDenied/parse errors → warn stderr). Includes roundtrip, NotFound, and concurrent load+store tests.
+
+### 2026-05-10 — feat(dispatch-agent): Rust crate scaffold and cli-templates.toml rewrite
+
+- `skills/dispatch-agent/rust/`: New Rust crate for the dispatch-agent binary rewrite (PR 1, layer a). Implements `types.rs`, `fsutil.rs`, `config.rs`, `templates.rs` with full unit tests. Python scripts remain the active entry point; Rust source is dark in production (see docs/plans/2026-05-10-dispatch-agent-rust-rewrite.md for rollout plan).
+- `skills/dispatch-agent/data/cli-templates.toml`: Rewritten as a fully-commented field reference document.
+
 ### 2026-05-08 — feat(dispatch-agent): add type=source env entries for shell env file sourcing
 
 - Added `type=source` as a valid env entry type in dispatch-agent config
