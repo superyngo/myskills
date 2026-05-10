@@ -10,13 +10,14 @@ fn canonical_init() {
     let input = fs::read_to_string(fixtures).unwrap();
 
     let dir = TempDir::new().unwrap();
-    let dest = dir.path().join("dispatch-agent.toml");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_dispatch-agent"))
         .arg("init")
+        .env("HOME", dir.path())
         .current_dir(dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("failed to spawn init");
 
@@ -25,10 +26,39 @@ fn canonical_init() {
     drop(stdin);
 
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("dispatch-agent.toml"));
-    assert!(dest.exists() || true);
+    assert!(
+        out.status.success(),
+        "init failed: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // File should be created at ~/<HOME>/.config/dispatch-agent.toml
+    let config_path = dir.path().join(".config").join("dispatch-agent.toml");
+    assert!(
+        config_path.exists(),
+        "config file not created at {}",
+        config_path.display()
+    );
+
+    // Should be valid TOML
+    let content = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("version"),
+        "config should contain version field"
+    );
+
+    // On unix: file mode should be 0600
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::metadata(&config_path).unwrap().permissions();
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o600,
+            "file mode should be 0600, got {:o}",
+            perms.mode() & 0o777
+        );
+    }
 }
 
 #[test]
@@ -36,14 +66,23 @@ fn invalid_json() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dispatch-agent"))
         .arg("init")
         .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("failed to spawn init");
     let stdin = child.stdin.as_mut().unwrap();
     stdin.write_all(b"{bad json}").unwrap();
     drop(stdin);
     let out = child.wait_with_output().unwrap();
-    // Expect non-zero exit for invalid JSON input
-    assert!(!out.status.success());
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for invalid JSON"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Spec: stderr contains "invalid JSON"
+    assert!(
+        stderr.to_lowercase().contains("json") || stderr.contains("parse"),
+        "stderr should mention JSON error, got: {stderr}"
+    );
 }
 
 #[test]
@@ -56,6 +95,7 @@ fn hint_in_stderr() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_dispatch-agent"))
         .arg("init")
+        .env("HOME", dir.path())
         .current_dir(dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -70,6 +110,9 @@ fn hint_in_stderr() {
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Should contain hint about config editing
-    assert!(stderr.contains("config edit") || stderr.contains("edit"));
+    // Spec: successful init prints stderr hint containing "config edit"
+    assert!(
+        stderr.contains("config edit"),
+        "stderr should contain 'config edit' hint, got: {stderr}"
+    );
 }

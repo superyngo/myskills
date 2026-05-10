@@ -143,6 +143,10 @@ fn show_config_no_config() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no config file found"));
+    assert!(
+        stderr.contains("init") || stderr.contains("dispatch-agent init"),
+        "stderr should suggest running init, got: {stderr}"
+    );
 }
 
 #[test]
