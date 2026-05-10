@@ -1,13 +1,15 @@
+#![allow(dead_code)]
+
 pub mod unix;
 pub mod windows;
 
+use anyhow::Context;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use anyhow::Context;
 
 #[derive(Clone, Default)]
 pub struct ChildState {
@@ -84,7 +86,12 @@ pub fn spawn_and_wait(
             }
             if verbose {
                 let elapsed = start.elapsed().as_secs();
-                let _ = writeln!(io::stderr(), "[waiting: {} — {}s elapsed]", agent_id_owned, elapsed);
+                let _ = writeln!(
+                    io::stderr(),
+                    "[waiting: {} — {}s elapsed]",
+                    agent_id_owned,
+                    elapsed
+                );
             }
         }
     });

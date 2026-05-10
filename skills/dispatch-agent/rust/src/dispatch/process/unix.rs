@@ -1,6 +1,9 @@
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::os::unix::process::CommandExt;
 use super::ChildState;
+use std::os::unix::process::CommandExt;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 pub fn setup_process_group(cmd: &mut std::process::Command) {
     unsafe {
