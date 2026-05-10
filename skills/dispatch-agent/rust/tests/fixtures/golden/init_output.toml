@@ -1,0 +1,11 @@
+version = 1
+
+[[tiers]]
+id = "primary"
+
+[[tiers.agents]]
+id = "claude-default"
+cli = "claude"
+model = "claude-sonnet-4-5"
+args = ["--dangerously-skip-permissions"]
+env = []
