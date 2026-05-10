@@ -1,0 +1,5 @@
+[fake-agent]
+detect_binary = "false"
+prompt_flag = "-p"
+verified = true
+version_flag = ""

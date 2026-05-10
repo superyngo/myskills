@@ -1,0 +1,13 @@
+{
+  "save_location": "user",
+  "tier_order": ["primary"],
+  "agents": [
+    {
+      "id": "claude-default",
+      "cli": "claude",
+      "tier": "primary",
+      "model": "default",
+      "args": ["--dangerously-skip-permissions"]
+    }
+  ]
+}
