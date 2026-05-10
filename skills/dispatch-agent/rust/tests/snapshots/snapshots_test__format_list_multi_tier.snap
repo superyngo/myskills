@@ -1,0 +1,11 @@
+---
+source: tests/snapshots_test.rs
+expression: format_list(&config)
+---
+Tier: primary
+  [✓] shell (sh)
+  [✗] missing (dispatch-agent-nonexistent-xyz)
+
+Tier: fallback
+  [✓] shell2 (sh)
+  [✗] missing2 (dispatch-agent-nonexistent-xyz)

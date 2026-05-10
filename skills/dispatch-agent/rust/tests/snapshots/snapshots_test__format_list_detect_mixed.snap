@@ -1,0 +1,8 @@
+---
+source: tests/snapshots_test.rs
+expression: format_list_detect(&detect)
+---
+Available agent CLIs (no config — showing detected templates):
+  [✓] claude  2.1.5
+  [✓] gemini  (version probe disabled)
+  [✗] codex   (not found)
