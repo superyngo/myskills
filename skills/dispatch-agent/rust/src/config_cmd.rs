@@ -11,8 +11,10 @@ use std::process::Command;
 use crate::config::{find_config, find_git_root, load_config};
 use crate::dispatch::display::format_show_config;
 
-pub fn cmd_config(action: Option<&str>, config_arg: Option<&Path>) -> anyhow::Result<()> {
-    match action {
+use crate::cli::ConfigArgs;
+
+pub fn cmd_config(args: &ConfigArgs, config_arg: Option<&Path>) -> anyhow::Result<()> {
+    match args.action.as_deref() {
         None | Some("edit") => cmd_config_edit(config_arg),
         Some("show") => cmd_config_show(config_arg),
         Some("path") => cmd_config_path(config_arg),
@@ -155,14 +157,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cfg = dir.path().join("cfg.toml");
         fs::write(&cfg, "version = 1\n[[tiers]]\nid=\"t\"\n").unwrap();
-        let res = cmd_config(Some("path"), Some(cfg.as_path()));
+        let args = ConfigArgs {
+            action: Some("path".to_string()),
+        };
+        let res = cmd_config(&args, Some(cfg.as_path()));
         assert!(res.is_ok());
     }
 
     #[test]
     fn config_path_no_config_error() {
         // Ensure no env config via find_config; we can't fully control FS but expect an error when None
-        let res = cmd_config(Some("path"), None);
+        let args = ConfigArgs {
+            action: Some("path".to_string()),
+        };
+        let res = cmd_config(&args, None);
         // Either Ok (if system has config) or Err containing 'no config file found'
         if res.is_err() {
             let msg = res.unwrap_err().to_string();
@@ -179,13 +187,19 @@ mod tests {
             "version = 1\n[[tiers]]\nid=\"t\"\n[[tiers.agents]]\nid=\"a\"\ncli=\"echo\"\n",
         )
         .unwrap();
-        let res = cmd_config(Some("show"), Some(cfg.as_path()));
+        let args = ConfigArgs {
+            action: Some("show".to_string()),
+        };
+        let res = cmd_config(&args, Some(cfg.as_path()));
         assert!(res.is_ok());
     }
 
     #[test]
     fn config_show_no_config() {
-        let res = cmd_config(Some("show"), None);
+        let args = ConfigArgs {
+            action: Some("show".to_string()),
+        };
+        let res = cmd_config(&args, None);
         if res.is_err() {
             let msg = res.unwrap_err().to_string();
             assert!(msg.contains("no config file found"));
@@ -210,7 +224,10 @@ mod tests {
             fs::set_permissions(&script, perms).unwrap();
         }
         env::set_var("EDITOR", script.to_str().unwrap());
-        let res = cmd_config(Some("edit"), Some(cfg.as_path()));
+        let args = ConfigArgs {
+            action: Some("edit".to_string()),
+        };
+        let res = cmd_config(&args, Some(cfg.as_path()));
         env::remove_var("EDITOR");
         assert!(res.is_ok());
         let content = fs::read_to_string(&cfg).unwrap();

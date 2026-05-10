@@ -20,17 +20,7 @@ use crate::types::{Agent, Config, Template, Tier};
 
 use process::ChildState;
 
-pub struct DispatchArgs {
-    pub prompt: Option<String>,
-    pub file: Option<PathBuf>,
-    pub timeout: i64,
-    pub tier: Option<String>,
-    pub agent: Option<String>,
-    pub dry_run: bool,
-    pub list: bool,
-    pub show_config: bool,
-    pub verbose: bool,
-}
+use crate::cli::DispatchArgs;
 
 fn rr_state_path() -> PathBuf {
     dirs::cache_dir()
