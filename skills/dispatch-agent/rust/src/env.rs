@@ -18,7 +18,10 @@ pub fn resolve_env_var(ev: &EnvEntry) -> Option<(String, String)> {
         },
         EnvEntry::Env { name, var } => match std::env::var(var) {
             Ok(value) => Some((name.clone(), value)),
-            Err(_) => None,
+            Err(_) => {
+                eprintln!("dispatch-agent: env var '{var}' is not set, skipping");
+                None
+            }
         },
         EnvEntry::Source { .. } => None,
     }
