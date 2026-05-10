@@ -35,11 +35,11 @@ pub fn start_signal_watcher(
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            let mut st = state.lock().unwrap();
-            if let Some(pid) = st.pid {
+            let pid = state.lock().unwrap().pid;
+            if let Some(pid) = pid {
                 killpg(pid, sig);
             }
-            st.interrupted = true;
+            state.lock().unwrap().interrupted = true;
         }
     })
 }

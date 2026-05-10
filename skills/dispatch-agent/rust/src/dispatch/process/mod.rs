@@ -46,7 +46,7 @@ pub fn spawn_and_wait(
     }
 
     // stdout reader thread
-    let stdout = child.stdout.take().unwrap();
+    let stdout = child.stdout.take().context("stdout not captured")?;
     let stdout_thread = std::thread::spawn(move || {
         let mut reader = stdout;
         let mut buf = [0u8; 4096];
@@ -62,7 +62,7 @@ pub fn spawn_and_wait(
     });
 
     // stderr collector thread
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child.stderr.take().context("stderr not captured")?;
     let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_buf_clone = Arc::clone(&stderr_buf);
     let stderr_thread = std::thread::spawn(move || {
@@ -122,7 +122,7 @@ pub fn spawn_and_wait(
     // join threads
     ticker_shutdown.store(true, Ordering::Relaxed);
     ticker_thread.thread().unpark();
-    let _ = child.kill(); // cleanup safety
+    // child.kill() is a no-op here (already reaped), but harmless
     stdout_thread.join().ok();
     stderr_thread.join().ok();
     ticker_thread.join().ok();
