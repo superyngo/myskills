@@ -183,7 +183,10 @@ fn agent_not_found() {
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not found") || stderr.contains("BAD"));
+    assert!(
+        stderr.contains("not found") || stderr.contains("BAD"),
+        "stderr should mention unknown agent, got: {stderr}"
+    );
 }
 
 #[test]
@@ -208,7 +211,10 @@ fn tier_not_found() {
 
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not found") || stderr.contains("BAD"));
+    assert!(
+        stderr.contains("not found") || stderr.contains("BAD"),
+        "stderr should mention unknown tier, got: {stderr}"
+    );
 }
 
 #[test]

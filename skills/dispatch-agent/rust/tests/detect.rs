@@ -20,5 +20,8 @@ fn detect_json() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(parsed.get("fake-agent").is_some());
+    assert!(
+        parsed.get("fake-agent").is_some(),
+        "JSON output should contain 'fake-agent' key, got: {stdout}"
+    );
 }
