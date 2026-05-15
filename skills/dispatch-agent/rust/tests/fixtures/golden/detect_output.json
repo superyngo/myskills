@@ -1,8 +1,0 @@
-{
-  "fake-agent": {
-    "path": "/usr/bin/false",
-    "version": null,
-    "callable": true,
-    "verified": true
-  }
-}

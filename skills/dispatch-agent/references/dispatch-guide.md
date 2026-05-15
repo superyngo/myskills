@@ -13,9 +13,16 @@
 | `--agent ID` | Force specific agent by agent.id (bypass tier logic) |
 | `--config PATH` | Explicit config file path |
 | `--dry-run` | Show command without executing |
-| `--list` | List agents and availability |
-| `--show-config` | Print resolved config |
 | `--verbose` | Show per-agent attempt and wait status |
+
+Listing agents and showing the resolved config are config subcommands:
+
+| Command | Description |
+|---------|-------------|
+| `dispatch-agent config list` | List agents and availability |
+| `dispatch-agent config show` | Print resolved config |
+| `dispatch-agent config path` | Print resolved config path |
+| `dispatch-agent config edit` | Open the config in `$EDITOR` |
 
 ---
 
@@ -117,14 +124,14 @@ On load: if stored agent id not found in config (agent removed/renamed), start f
   command: ['claude', '-p', 'your prompt']
 ```
 
-**--list (with config):**
+**config list (with config):**
 ```
 TIER primary
   [✓] claude-default   cli=claude   model=default    /usr/local/bin/claude
   [✗] copilot-sonnet   cli=copilot  model=sonnet-4.6  (not found)
 ```
 
-**--list (no config):**
+**config list (no config):**
 ```
 [SYSTEM CLIs — no config loaded, run 'init' to configure]
   [✓] claude    /usr/local/bin/claude   v1.2.3
@@ -132,7 +139,7 @@ TIER primary
   [✗] codex     (not found)
 ```
 
-**--show-config:**
+**config show:**
 ```
 Config: /project/.config/dispatch-agent.toml  (project layer)
 

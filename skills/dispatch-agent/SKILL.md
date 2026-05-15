@@ -1,7 +1,7 @@
 ---
 name: dispatch-agent
 description: Dispatch tasks to other agent CLIs with tier-based fallback
-argument-hint: "[init | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--agent ID] [--config PATH] [--dry-run] [--list] [--show-config] [--verbose]"
+argument-hint: "[init | config <show|list|path|edit> | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--agent ID] [--config PATH] [--dry-run] [--verbose]"
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -51,10 +51,13 @@ python3 scripts/dispatch.py \
   [--tier ID] \
   [--agent ID] \
   [--config PATH] \
-  [--dry-run] [--list] [--show-config] [--verbose]
+  [--dry-run] [--verbose]
 ```
 
-If neither `-p` nor `-f` is provided (and not `--list`/`--show-config`/`--dry-run`):
+Listing agents/availability and showing the resolved config moved to the `config` subcommand:
+`dispatch-agent config list` and `dispatch-agent config show`.
+
+If neither `-p` nor `-f` is provided (and not `--dry-run`):
 Use `AskUserQuestion` to collect the prompt before dispatching.
 
 **For `--help` or errors:** load `references/dispatch-guide.md`.
