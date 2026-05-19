@@ -1,46 +1,54 @@
 # dispatch-agent skill — CLI shim refactor
 
 Date: 2026-05-19
-Status: Approved (brainstorming, v2 after review)
+Status: Approved (brainstorming, v3 after second-round review + CLI behaviour verification)
 
 ## Goal
 
-Refactor the `dispatch-agent` skill from a Python-script-bundling skill into a thin shell over the `dispatch-agent` CLI (https://github.com/superyngo/dispatch-agent). The skill is responsible only for:
+Refactor the `dispatch-agent` skill from a Python-script-bundling skill into a thin shell over the `dispatch-agent` CLI (https://github.com/superyngo/dispatch-agent). The skill is responsible for:
 
 1. Detecting whether the `dispatch-agent` binary is on `PATH`.
 2. Guiding installation when missing.
-3. Routing argv to the matching CLI subcommand, loading the matching reference file for narrative.
-4. Surfacing CLI errors.
+3. Orchestrating two subcommands that need pre-CLI work (`init`, `dispatch` without prompt).
+4. Routing everything else to the matching CLI subcommand and loading the matching reference file for narrative.
+5. Surfacing CLI errors.
 
-All recursion-guarding, config discovery, agent detection, dispatch, and round-robin state is delegated to the CLI. SKILL.md contains no business logic — all subcommand-specific knowledge lives in `references/`.
+SKILL.md contains only detection, install guidance, and routing. All subcommand-specific knowledge lives in `references/`. The two orchestration cases (`init` JSON assembly and `dispatch` prompt collection) are explicit, narrow exceptions documented below.
+
+## Verified CLI behaviour (basis for design)
+
+Tested at refactor time. The skill must respect these:
+
+- `dispatch-agent init` reads a JSON payload from stdin. No stdin → `invalid JSON: EOF`.
+- `dispatch-agent dispatch` with no `-p` / `-f` does NOT error — it enters interactive agent mode (will hang inside Bash tool).
+- `dispatch-agent config` with no ACTION fails with `Device not configured (os error 6)` (TTY required).
+- `dispatch-agent config edit` requires a TTY (same failure mode).
+- No `--version` flag exists.
+- `--config <PATH>` accepted at both top level and subcommand level; spec standardises on **subcommand level**.
+- `dispatch-agent detect` outputs JSON keyed by agent name; values `{ path, version, callable, verified }`.
 
 ## Non-goals
 
-- Pinning or runtime-checking CLI version (a minimum tested version is documented, not enforced).
+- Pinning or runtime-checking CLI version (no `--version` to check). Documented as "tested against upstream commit/date X" only.
 - Caching detection results.
-- Handling sudo / UAC elevation inside the skill (fallback to manual instructions).
-- Auto-migrating any state left by the previous Python implementation.
-- Re-implementing any CLI logic.
+- Handling sudo / UAC elevation inside the skill.
+- Auto-migrating state left by the previous Python implementation.
+- Classifying CLI exit codes into retry / config / crash categories (CLI exit-code semantics not documented upstream; future work).
 
 ## File structure
 
 ```
 skills/dispatch-agent/
-  SKILL.md                          # rewritten — detection + routing only
+  SKILL.md                          # rewritten
   references/
-    install-guide.md                # NEW — install one-liners per OS, min tested version
-    dispatch-guide.md               # REWRITTEN — dispatch subcommand + flag reference
-    detect-guide.md                 # NEW — detect JSON schema + interpretation
-    init-guide.md                   # REWRITTEN — pre-flight, run, verify (CLI init is non-interactive)
+    install-guide.md                # NEW — install one-liners per OS
+    dispatch-guide.md               # REWRITTEN — dispatch flags + examples
+    detect-guide.md                 # NEW — detect JSON schema
+    init-guide.md                   # REWRITTEN — init JSON schema + orchestration notes
     config-guide.md                 # NEW — config schema + show/list/path + edit guidance
 ```
 
-Removed entirely (not archived — git history preserves them):
-
-- `scripts/` (already git-deleted)
-- `scripts.bak/`
-- `data/`
-- `tests/`
+Removed entirely (git history preserves them): `scripts/`, `scripts.bak/`, `data/`, `tests/`.
 
 ## SKILL.md flow
 
@@ -50,137 +58,194 @@ Removed entirely (not archived — git history preserves them):
 
 2. If missing:
    - Load references/install-guide.md.
-   - AskUserQuestion options:
-       - Install (user)
-       - Install (system, requires Admin/sudo)
-       - Show instructions only
-       - Cancel
-   - Execute selected one-liner via Bash (irm|iex on Windows, curl|bash on *nix).
-   - After install:
-       - Run `hash -r` (bash) or equivalent to refresh PATH cache.
-       - Re-check `command -v dispatch-agent`.
-       - On success: run `dispatch-agent detect` and show user which agent CLIs are ready.
-   - On non-zero exit / privilege failure: print the system-install command
-     verbatim and stop. The user runs it manually and re-invokes the skill.
+   - AskUserQuestion options: Install (user) / Install (system) / Show only / Cancel.
+   - Execute selected one-liner via Bash.
+   - After install: refresh shell cache, then re-detect:
+       hash -r 2>/dev/null || rehash 2>/dev/null || true
+       command -v dispatch-agent
+   - On success: run `dispatch-agent detect` and show user which agent CLIs are ready.
+   - On failure / declined elevation: print the system-install command verbatim
+     and stop. The user runs it manually and re-invokes the skill.
 
-3. Route by first argv token (CLI present). Every route loads its reference
-   file first, then forwards. `--config PATH` (when supplied) is appended
-   verbatim to every forwarded command.
+3. Route by first non-flag argv token. Every route loads its reference file
+   first. `--config PATH` (when present in argv) is passed through verbatim
+   at the subcommand level — the skill does not re-place it.
 
-   - `init`             -> load references/init-guide.md      -> dispatch-agent init [--config ...]
-   - `detect`           -> load references/detect-guide.md    -> dispatch-agent detect
-   - `config edit`      -> load references/config-guide.md
-                           -> dispatch-agent config path     (capture stdout)
-                           -> Tell user to edit that path in their terminal
-                              ($EDITOR <path>) or with Read/Edit tools.
-                           Do NOT forward `config edit` to the CLI — it requires
-                           a TTY and fails with "Device not configured" inside
-                           the Bash tool.
-   - `config <other>`   -> load references/config-guide.md    -> dispatch-agent config <sub>
-   - `-p` / `-f` / etc. -> load references/dispatch-guide.md  -> dispatch-agent dispatch <args>
+   - `init`             -> ORCHESTRATED (see "init orchestration" below)
+   - `detect`           -> load detect-guide.md   -> dispatch-agent detect
+   - `config edit`      -> INTERCEPTED (see "config interception" below)
+   - `config` (no arg)  -> INTERCEPTED (same as config edit)
+   - `config <other>`   -> load config-guide.md   -> dispatch-agent config <sub>
+   - `-p` / `-f` present
+                        -> load dispatch-guide.md -> dispatch-agent dispatch <args>
+   - no subcommand, no `-p`/`-f`, no `--dry-run`
+                        -> PROMPT-COLLECTION (see "dispatch prompt collection" below)
+   - `--dry-run` without prompt
+                        -> forward as-is (CLI will report)
    - `--help`           -> run `dispatch-agent --help` first, then load
-                           references/dispatch-guide.md for skill-level notes
-                           (install, init, etc.).
+                           dispatch-guide.md for skill-level notes.
 
-4. On CLI non-zero exit: show stderr, load the route's reference file for
-   troubleshooting context.
+4. On CLI non-zero exit: print stderr, load the route's reference file for
+   troubleshooting context. No exit-code classification.
 
 5. Removed from SKILL.md entirely:
-   - Recursion Guard (CLI handles DISPATCH_AGENT_DEPTH internally).
+   - Recursion Guard (CLI handles DISPATCH_AGENT_DEPTH).
    - Find Config (CLI handles discovery).
-   - Any `python3` or `scripts/` invocation.
+   - Any `python3` / `scripts/` invocation.
 ```
 
-OS detection: `uname -s` for macOS/Linux, `$OS == Windows_NT` (or absence of `uname`) for Windows.
+### init orchestration
 
-The skill does not pre-empt missing `-p` / `-f`; the CLI's own error message is surfaced.
+CLI `init` consumes a JSON payload from stdin. The skill assembles it from `detect` output + user confirmation, then pipes:
+
+```
+1. Load references/init-guide.md.
+2. Run `dispatch-agent detect` -> parse JSON, list callable agents.
+3. Build a default payload:
+     {
+       "save_location": "user",
+       "agents": [ <one entry per callable agent, tier="primary"> ],
+       "tier_order": ["primary"]
+     }
+4. AskUserQuestion to confirm/override:
+     - save_location: user vs project
+     - which detected agents to include
+     - (tier_order kept simple: single "primary" tier by default)
+5. Pipe the assembled JSON via stdin:
+     printf '%s' "<json>" | dispatch-agent init [--config PATH]
+6. On success: run `dispatch-agent config show` and surface the resulting file.
+```
+
+The full JSON schema is documented in `references/init-guide.md`; SKILL.md only needs to know the high-level steps.
+
+### dispatch prompt collection
+
+When argv routes to dispatch but no `-p` / `-f` is supplied (and `--dry-run` is not set), the CLI would enter interactive mode and hang. The skill prevents this:
+
+```
+1. Load references/dispatch-guide.md.
+2. AskUserQuestion: collect prompt text from user.
+3. Forward as `dispatch-agent dispatch -p "<collected>" <rest-of-argv>`.
+```
+
+`-f <file>` users supply the file path, so this case only triggers when neither flag is present.
+
+### config interception
+
+`config edit` and bare `config` both require a TTY and fail inside the Bash tool. Both are intercepted:
+
+```
+1. Load references/config-guide.md.
+2. Run `dispatch-agent config path` and capture stdout.
+3. Tell the user: "Edit this file in your terminal: $EDITOR <path>, or use
+   the Read/Edit tools."
+4. Do NOT forward to the CLI.
+```
+
+OS detection for install: `uname -s` for macOS/Linux, `$OS == Windows_NT` (or absence of `uname`) for Windows.
 
 ## YAML frontmatter
 
-`argument-hint` is updated to reflect actual CLI surface:
-
+```yaml
+argument-hint: "[init | detect | config <show|list|path|edit> | -p <prompt> | -f <file>] [--timeout N] [--tier ID] [--agent ID] [--config PATH] [--dry-run] [--verbose]"
+allowed-tools: Bash, Read, Write, AskUserQuestion
 ```
-[init | detect | config <show|list|path|edit> | -p <prompt> | -f <file>]
-[--timeout N] [--tier ID] [--agent ID] [--config PATH] [--dry-run] [--verbose]
-```
-
-`allowed-tools` stays `Bash, Read, Write, AskUserQuestion`.
 
 ## Reference files — content responsibilities
 
-### references/install-guide.md
+### references/install-guide.md (new)
 
 - Repo link, README link.
 - Windows PowerShell user / system install + uninstall one-liners.
 - Linux/macOS bash user / system install + uninstall one-liners.
-- Minimum tested version line: `Tested against dispatch-agent >= <current installed version at refactor time>`. Not enforced.
-- One sentence describing skill behaviour when the CLI is missing.
+- Note: "Tested against upstream commit/date <hash or YYYY-MM-DD> at refactor time. CLI has no `--version` flag; verify by running `dispatch-agent --help`."
+- One sentence on skill behaviour when CLI is missing.
 
-Single source of truth for install commands. SKILL.md must not duplicate them.
+### references/dispatch-guide.md (rewrite)
 
-### references/dispatch-guide.md (rewrite, not just edit)
+Section-by-section audit:
 
-Section-by-section audit. Keep / migrate / drop each existing section:
-
-- Flag reference (`-p`, `-f`, `--timeout`, `--tier`, `--agent`, `--dry-run`, `--verbose`): keep, verify against current CLI.
+- Flag reference (`-p`, `-f`, `--timeout`, `--tier`, `--agent`, `--config`, `--dry-run`, `--verbose`): keep, verify against current CLI help.
 - Config schema / tier semantics / env injection: **migrate to `config-guide.md`**.
-- `cli-templates.toml`, `rr-state.json`, `data/` paths: **drop**. CLI owns these.
-- Examples: keep, but rewrite to use `dispatch-agent dispatch ...` not `python3 scripts/dispatch.py ...`.
+- `cli-templates.toml`, `rr-state.json`, `data/` paths: **drop**.
+- Examples: rewrite as `dispatch-agent dispatch ...`.
 
 ### references/detect-guide.md (new)
 
-- Purpose of `detect`: probe which agent CLIs are installed and callable.
+- Purpose: probe which agent CLIs are installed and callable.
 - JSON output schema: `{ <agent>: { path, version, callable, verified } }`.
-- How to read the fields (callable=runs, verified=version probe succeeded).
-- When to invoke: post-install confirmation, debugging "agent not found" routing errors.
+- Interpretation: `callable=true` means the binary ran; `verified=true` means version probe succeeded.
+- When to invoke: post-install confirmation, debugging "agent not found" errors, pre-init payload assembly.
 
 ### references/init-guide.md (rewrite)
 
-CLI `init` is non-interactive (only `--config <PATH>`). Old 6-step Q&A flow is removed. New content:
+- JSON stdin schema (authoritative, used by SKILL.md's init orchestration):
 
-- Pre-flight: deciding project-level vs user-level config path.
-- Execute: `dispatch-agent init [--config <path>]`.
-- Verify: `dispatch-agent config show` to inspect generated file; `dispatch-agent detect` to confirm agent availability.
-- Pointer to `config-guide.md` for tuning the generated file.
+  ```
+  {
+    "save_location": "user" | "project",
+    "agents": [
+      {
+        "id": "<a-zA-Z0-9_-+>",
+        "cli": "<must match detect output key>",
+        "model": "<model name>",
+        "args": ["<extra cli args>"],
+        "tier": "<must appear in tier_order>",
+        "env": [
+          { "type": "file", "name": "...", "path": "..." },
+          { "type": "env",  "name": "...", "var": "..." }
+        ]
+      }
+    ],
+    "tier_order": ["primary", "..."]
+  }
+  ```
+
+- Minimal example payload.
+- Verify steps: `dispatch-agent config show`, `dispatch-agent detect`.
+- Pointer to `config-guide.md` for tuning after generation.
 
 ### references/config-guide.md (new)
 
-- Config schema (migrated from current dispatch-guide.md).
+- Config TOML schema (migrated from current dispatch-guide.md).
 - Tier resolution & round-robin semantics.
 - Env injection rules.
-- `show` / `list` / `path` subcommand outputs.
-- `edit` guidance: skill intercepts; user edits via `$EDITOR <path>` or Read/Edit tools.
+- `show` / `list` / `path` outputs.
+- `edit` and bare `config`: skill intercepts; user edits via `$EDITOR <path>` or Read/Edit tools.
 
 ## Migration notes (informational)
 
-- Old `data/cli-templates.toml` is obsolete: CLI binary ships templates internally.
-- Old `rr-state.json` location is now CLI-managed; no manual move needed.
-- Existing user/project TOML configs from the Python version should remain compatible (same schema), but the skill performs no detection or conversion — users with issues should re-run `dispatch-agent init` and migrate manually.
+- Old `data/cli-templates.toml` is obsolete: CLI ships templates internally.
+- Old `rr-state.json` is now CLI-managed; no manual move.
+- Existing TOML configs from the Python version should remain schema-compatible; skill performs no detection or conversion. Users with issues should re-run `init` and migrate manually.
 
 ## Acceptance criteria
 
 - `rg "python3|scripts/|scripts\.bak|/data/" skills/dispatch-agent/` returns no matches.
 - `skills/dispatch-agent/` contains only `SKILL.md` and `references/` (5 reference files).
-- With CLI absent: skill loads `install-guide.md`, asks user, runs selected one-liner, `hash -r`, re-detects, then runs `dispatch-agent detect` to confirm.
-- On install failure: skill prints the manual command and exits without claiming success.
-- With CLI present: `-p "hi" --dry-run` forwards to `dispatch-agent dispatch -p "hi" --dry-run`.
-- `init`, `detect`, `config show`, `config list`, `config path` all forward to matching CLI subcommand after loading their reference file.
-- `config edit` does **not** forward; skill prints config path + edit instructions.
-- `--help` runs `dispatch-agent --help` then surfaces `dispatch-guide.md`.
-- `--config PATH` is appended to every forwarded command when supplied.
-- SKILL.md contains no Recursion Guard or Find Config section.
-- YAML frontmatter `argument-hint` lists `detect` and matches CLI surface.
+- CLI absent → skill loads `install-guide.md`, asks user, runs one-liner, refreshes shell cache, re-detects, runs `dispatch-agent detect`.
+- Install failure → skill prints manual command and exits without claiming success.
+- `-p "hi" --dry-run` forwards verbatim to `dispatch-agent dispatch -p "hi" --dry-run`.
+- No `-p` / `-f` / `--dry-run` → skill collects prompt via AskUserQuestion before forwarding.
+- `init` → skill runs `detect`, assembles JSON, confirms with user, pipes to `dispatch-agent init`.
+- `detect`, `config show`, `config list`, `config path` → forward after loading reference file.
+- `config edit` and bare `config` → intercepted; skill prints config path + edit guidance, does not forward.
+- `--help` → runs CLI help first, then loads `dispatch-guide.md`.
+- `--config PATH` in argv → passed through verbatim at subcommand level; skill does not re-place it.
+- SKILL.md has no Recursion Guard or Find Config section.
+- YAML `argument-hint` includes `detect` and matches CLI surface.
 
 ## Risks
 
-- **CLI flag drift**: if upstream changes flags, skill breaks silently. Minimum-tested-version note is a hint, not enforcement.
-- **`config edit` divergence**: users invoking `config edit` get instructions instead of an editor. Documented behaviour.
-- **PATH cache after install**: handled by `hash -r` + re-detection.
-- **Non-interactive PowerShell**: `irm | iex` may fail; fallback to printed manual command covers this.
+- **CLI flag / behaviour drift**: install-guide.md notes the tested commit/date; no runtime check.
+- **`init` JSON schema drift**: documented schema in init-guide.md becomes stale if upstream changes. Manual sync required.
+- **`config edit` / bare `config` divergence from CLI**: skill prints instructions instead of opening editor. Documented behaviour.
+- **PATH cache after install**: handled by `hash -r || rehash || true` fallback chain.
 
 ## Out of scope
 
 - Pinning or runtime-checking CLI version.
 - Auto-migration of old state.
-- Fixing upstream CLI quirks (e.g. recursion-guard exit code 0; tracked separately).
+- Fixing upstream CLI quirks (recursion-guard exit code, TTY-requiring subcommands, missing `--version`).
 - New dispatch features.
+- Multi-tier init defaults (skill seeds a single `"primary"` tier; users add tiers manually via `config edit`).
