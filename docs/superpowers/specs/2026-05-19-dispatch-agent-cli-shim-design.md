@@ -1,7 +1,7 @@
 # dispatch-agent skill — CLI shim refactor
 
 Date: 2026-05-19
-Status: Approved (brainstorming, v5 after fourth-round review)
+Status: Approved (brainstorming, v6 — minor fills from round-4 review; ready for writing-plans)
 
 ## Goal
 
@@ -108,6 +108,10 @@ CLI `init` consumes a JSON payload from stdin. The skill assembles it from `dete
 ```
 1. Load references/init-guide.md.
 2. Run `dispatch-agent detect` -> parse JSON.
+2.5. If `detect` returns zero `callable == true` agents:
+     Inform the user no agent CLI is installed, point them at install
+     docs for the agent of their choice, and abort init without writing
+     anything.
 3. Build a default payload from agents where `callable == true`:
      {
        "save_location": "user",
@@ -272,9 +276,10 @@ Section-by-section audit:
 - **Permission-bypass flag table** (authoritative source used by init orchestration):
     - `claude` → `--dangerously-skip-permissions`
     - `codex` → `--dangerously-bypass-approvals-and-sandbox`
-    - `copilot` → (record observed flag at refactor time)
-    - `opencode` → (record observed flag at refactor time)
-    - `gemini` → (record observed flag at refactor time)
+    - `copilot` → `--allow-all`
+    - `gemini` → (no standalone flag; see `gemini-npx` note below)
+    - `gemini-npx` → `--skip-trust` is **already baked into the CLI template's `extra_args`**; users must NOT add it to `args[]` manually, and init orchestration must NOT append it.
+    - `opencode` → no known permission-bypass flag at refactor time; init orchestration skips this CLI when "On" is chosen and logs a note.
   Note: these flags are explicitly dangerous and skip safety checks. Documented but never default-on in init.
 
 ## Migration notes (informational)
