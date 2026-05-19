@@ -1,7 +1,7 @@
 # dispatch-agent skill — CLI shim refactor
 
 Date: 2026-05-19
-Status: Approved (brainstorming, v4 after third-round review + further CLI behaviour verification)
+Status: Approved (brainstorming, v5 after fourth-round review)
 
 ## Goal
 
@@ -86,7 +86,9 @@ Removed entirely (git history preserves them): `scripts/`, `scripts.bak/`, `data
    - no subcommand, no `-p`/`-f`, no `--dry-run`
                         -> PROMPT-COLLECTION (see "dispatch prompt collection" below)
    - `--dry-run` without prompt
-                        -> forward as-is (CLI will report)
+                        -> forward as-is (safe: CLI prints command template
+                           with literal `<prompt>` placeholder; no error,
+                           no hang)
    - `--help`           -> run `dispatch-agent --help` first, then load
                            dispatch-guide.md for skill-level notes.
 
@@ -106,14 +108,6 @@ CLI `init` consumes a JSON payload from stdin. The skill assembles it from `dete
 ```
 1. Load references/init-guide.md.
 2. Run `dispatch-agent detect` -> parse JSON.
-2.5. Overwrite check (DATA-LOSS PREVENTION):
-     - Run `dispatch-agent config path` to learn where init would write
-       (combined with the chosen save_location in step 4).
-     - If that file exists:
-         AskUserQuestion: "Config exists at <path>.
-                          Overwrite / Backup first / Cancel"
-       - Backup: copy to `<path>.bak.<timestamp>` before continuing.
-       - Cancel: abort init flow.
 3. Build a default payload from agents where `callable == true`:
      {
        "save_location": "user",
@@ -132,17 +126,40 @@ CLI `init` consumes a JSON payload from stdin. The skill assembles it from `dete
      - save_location: user vs project
      - which detected agents to include (callable agents pre-selected;
        non-callable agents shown but unchecked)
+     - **permission-bypass flags** (off by default, explicit risk note):
+         "Append non-interactive permission-bypass flags to each agent's
+          args? These flags (e.g. --dangerously-skip-permissions) let the
+          agent run tools without prompting — required for unattended
+          dispatch but they skip safety checks."
+         Options: Off (safe default) / On (I understand the risk)
+       On: append the matching flag to each agent's `args[]` per the table
+       in `references/config-guide.md` (claude/codex/copilot/etc.).
      - (tier_order kept simple: single "primary" tier by default)
-5. Pipe the assembled JSON via stdin:
+5. Overwrite check (DATA-LOSS PREVENTION; must run AFTER save_location is known):
+     - Compute target path from save_location:
+         user    -> ~/.config/dispatch-agent.toml
+         project -> <git-root>/.config/dispatch-agent.toml
+       (Use `git rev-parse --show-toplevel`; fall back to cwd if not a repo.)
+     - If that file exists:
+         AskUserQuestion: "Config exists at <path>.
+                          Overwrite / Backup first / Cancel"
+       - Backup: copy to `<path>.bak.<UTC-timestamp>` (format: `YYYYMMDDTHHMMSSZ`,
+         e.g. `20260519T143000Z`) before continuing.
+       - Cancel: abort init flow.
+6. Pipe the assembled JSON via stdin:
      printf '%s' "<json>" | dispatch-agent init
-   Note: do NOT pass `--config PATH` here expecting it to redirect output —
-   it does not. `save_location` is the only control.
-6. On success: run `dispatch-agent config show` and surface the resulting file.
+   `--config PATH` (if present in argv) is stripped before forwarding init —
+   it does not redirect init output (verified). `save_location` is the only
+   control. The skill warns the user once if `--config` was supplied with
+   `init`.
+7. On success: run `dispatch-agent config show` and surface the resulting file.
+   If permission-bypass flags were appended, also run
+   `dispatch-agent dispatch --dry-run` to verify the command shape.
    Note: `model: "default"` will appear in the output as a concrete model
    name (CLI resolves it). This is expected.
 ```
 
-Out-of-the-box init seeds a minimal config — no extra `args`, no `env`. To add permission-bypass flags (e.g. `--dangerously-skip-permissions`) or env injection (`file` / `env` / `source` types), users edit the config via the config-interception path after init.
+Init seeds a minimal config. By default `args` is empty and `env` is empty; users may opt into permission-bypass flags in step 4. For env injection (`file` / `env` / `source` types) or additional args, edit the config after init via the config-interception path.
 
 The full JSON schema is documented in `references/init-guide.md`; SKILL.md only needs to know the high-level steps.
 
@@ -252,6 +269,13 @@ Section-by-section audit:
 - Env injection rules.
 - `show` / `list` / `path` outputs.
 - `edit` and bare `config`: skill intercepts; user edits via `$EDITOR <path>` or Read/Edit tools.
+- **Permission-bypass flag table** (authoritative source used by init orchestration):
+    - `claude` → `--dangerously-skip-permissions`
+    - `codex` → `--dangerously-bypass-approvals-and-sandbox`
+    - `copilot` → (record observed flag at refactor time)
+    - `opencode` → (record observed flag at refactor time)
+    - `gemini` → (record observed flag at refactor time)
+  Note: these flags are explicitly dangerous and skip safety checks. Documented but never default-on in init.
 
 ## Migration notes (informational)
 
@@ -267,7 +291,8 @@ Section-by-section audit:
 - Install failure → skill prints manual command and exits without claiming success.
 - `-p "hi" --dry-run` forwards verbatim to `dispatch-agent dispatch -p "hi" --dry-run`.
 - No `-p` / `-f` / `--dry-run` → skill collects prompt via AskUserQuestion before forwarding.
-- `init` → skill runs `detect`, **checks for existing config and offers Backup/Overwrite/Cancel**, assembles JSON from `callable==true` agents (with non-callable shown as opt-in), pipes to `dispatch-agent init`.
+- `init` → skill runs `detect`, assembles JSON from `callable==true` agents (non-callable shown as opt-in), asks about permission-bypass flags (off by default), **then checks for existing config and offers Overwrite/Backup/Cancel using the now-known save_location**, pipes to `dispatch-agent init`. Strips `--config` from forwarded init invocation; warns user if it was supplied.
+- Backup file naming: `<path>.bak.<UTC-timestamp>` with `YYYYMMDDTHHMMSSZ` format.
 - No `-p` / `-f` / `--dry-run` → skill collects prompt; empty/whitespace input re-prompts then aborts rather than forwarding.
 - `detect`, `config show`, `config list`, `config path` → forward after loading reference file.
 - `config edit` and bare `config` → intercepted; skill prints config path + edit guidance, does not forward.
