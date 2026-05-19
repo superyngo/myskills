@@ -1,7 +1,7 @@
 # dispatch-agent skill — CLI shim refactor
 
 Date: 2026-05-19
-Status: Approved (brainstorming, v3 after second-round review + CLI behaviour verification)
+Status: Approved (brainstorming, v4 after third-round review + further CLI behaviour verification)
 
 ## Goal
 
@@ -26,6 +26,11 @@ Tested at refactor time. The skill must respect these:
 - No `--version` flag exists.
 - `--config <PATH>` accepted at both top level and subcommand level; spec standardises on **subcommand level**.
 - `dispatch-agent detect` outputs JSON keyed by agent name; values `{ path, version, callable, verified }`.
+- `init` **overwrites any existing config without warning**.
+- `init`'s output location is determined by the JSON `save_location` field, **not** by `--config <PATH>`. `--config` on `init` only redirects which file the CLI later reads for unrelated state; it does NOT redirect the generated config destination.
+- `init` does not validate that `agents[].cli` is callable, or even that the named CLI exists. Any string is accepted.
+- `model: "default"` in the input JSON is resolved by the CLI to a concrete model name in the generated TOML (e.g. `claude` → `claude-sonnet-4-5`, `gemini` → `gemini-2.0-flash`).
+- `dispatch --dry-run` with no `-p` / `-f` does NOT error and does NOT hang. It prints the resolved command template with a literal `<prompt>` placeholder. Forwarding it as-is is safe.
 
 ## Non-goals
 
@@ -100,21 +105,44 @@ CLI `init` consumes a JSON payload from stdin. The skill assembles it from `dete
 
 ```
 1. Load references/init-guide.md.
-2. Run `dispatch-agent detect` -> parse JSON, list callable agents.
-3. Build a default payload:
+2. Run `dispatch-agent detect` -> parse JSON.
+2.5. Overwrite check (DATA-LOSS PREVENTION):
+     - Run `dispatch-agent config path` to learn where init would write
+       (combined with the chosen save_location in step 4).
+     - If that file exists:
+         AskUserQuestion: "Config exists at <path>.
+                          Overwrite / Backup first / Cancel"
+       - Backup: copy to `<path>.bak.<timestamp>` before continuing.
+       - Cancel: abort init flow.
+3. Build a default payload from agents where `callable == true`:
      {
        "save_location": "user",
-       "agents": [ <one entry per callable agent, tier="primary"> ],
+       "agents": [
+         { "id": "<cli>-default", "cli": "<cli>", "model": "default",
+           "args": [], "tier": "primary", "env": [] }
+         ...
+       ],
        "tier_order": ["primary"]
      }
+   - Default id format: `<cli>-default` (e.g. `claude-default`).
+   - Non-callable agents are excluded from the default; the confirmation
+     step lists them as "available but not detected" so the user can
+     opt in manually.
 4. AskUserQuestion to confirm/override:
      - save_location: user vs project
-     - which detected agents to include
+     - which detected agents to include (callable agents pre-selected;
+       non-callable agents shown but unchecked)
      - (tier_order kept simple: single "primary" tier by default)
 5. Pipe the assembled JSON via stdin:
-     printf '%s' "<json>" | dispatch-agent init [--config PATH]
+     printf '%s' "<json>" | dispatch-agent init
+   Note: do NOT pass `--config PATH` here expecting it to redirect output —
+   it does not. `save_location` is the only control.
 6. On success: run `dispatch-agent config show` and surface the resulting file.
+   Note: `model: "default"` will appear in the output as a concrete model
+   name (CLI resolves it). This is expected.
 ```
+
+Out-of-the-box init seeds a minimal config — no extra `args`, no `env`. To add permission-bypass flags (e.g. `--dangerously-skip-permissions`) or env injection (`file` / `env` / `source` types), users edit the config via the config-interception path after init.
 
 The full JSON schema is documented in `references/init-guide.md`; SKILL.md only needs to know the high-level steps.
 
@@ -125,10 +153,13 @@ When argv routes to dispatch but no `-p` / `-f` is supplied (and `--dry-run` is 
 ```
 1. Load references/dispatch-guide.md.
 2. AskUserQuestion: collect prompt text from user.
-3. Forward as `dispatch-agent dispatch -p "<collected>" <rest-of-argv>`.
+3. If returned string is empty / whitespace-only:
+     AskUserQuestion again with an explicit "prompt is required" hint.
+     If still empty, abort with a clear message instead of forwarding.
+4. Forward as `dispatch-agent dispatch -p "<collected>" <rest-of-argv>`.
 ```
 
-`-f <file>` users supply the file path, so this case only triggers when neither flag is present.
+`-f <file>` users supply the file path, so this case only triggers when neither flag is present. `--dry-run` without prompt is NOT routed here — it forwards as-is (the CLI prints a template with a `<prompt>` placeholder, see "Verified CLI behaviour").
 
 ### config interception
 
@@ -186,14 +217,15 @@ Section-by-section audit:
     "save_location": "user" | "project",
     "agents": [
       {
-        "id": "<a-zA-Z0-9_-+>",
-        "cli": "<must match detect output key>",
-        "model": "<model name>",
+        "id": "<one or more of: ASCII letter, digit, underscore, hyphen>",
+        "cli": "<agent key; should match a detect() output key, but CLI does NOT validate>",
+        "model": "<model name, or \"default\" — CLI resolves \"default\" to a concrete model>",
         "args": ["<extra cli args>"],
         "tier": "<must appear in tier_order>",
         "env": [
-          { "type": "file", "name": "...", "path": "..." },
-          { "type": "env",  "name": "...", "var": "..." }
+          { "type": "file",   "name": "...", "path": "..." },
+          { "type": "env",    "name": "...", "var": "..."  },
+          { "type": "source", "path": "..." }
         ]
       }
     ],
@@ -201,6 +233,14 @@ Section-by-section audit:
   }
   ```
 
+- Default-model resolution table (informational, observed at refactor time):
+    - `claude` → `claude-sonnet-4-5`
+    - `gemini` → `gemini-2.0-flash`
+    - …(record each CLI's `"default"` resolution observed in practice; values come from upstream CLI and may change)
+- Default agent-id convention used by skill's init orchestration: `<cli>-default` (e.g. `claude-default`). If multiple agents share a cli, suffix to disambiguate (`<cli>-<suffix>`).
+- Init seeds minimal entries: empty `args`, empty `env`. To add permission-bypass flags or env injection (`file` / `env` / `source` types), edit the config after init via the config-interception path.
+- `init` overwrites existing config without warning — the skill's orchestration guards against this with an overwrite-check step (see SKILL.md "init orchestration"). Users running `dispatch-agent init` directly do NOT get this guard.
+- `--config <PATH>` does not redirect where `init` writes; `save_location` is the only control.
 - Minimal example payload.
 - Verify steps: `dispatch-agent config show`, `dispatch-agent detect`.
 - Pointer to `config-guide.md` for tuning after generation.
@@ -227,7 +267,8 @@ Section-by-section audit:
 - Install failure → skill prints manual command and exits without claiming success.
 - `-p "hi" --dry-run` forwards verbatim to `dispatch-agent dispatch -p "hi" --dry-run`.
 - No `-p` / `-f` / `--dry-run` → skill collects prompt via AskUserQuestion before forwarding.
-- `init` → skill runs `detect`, assembles JSON, confirms with user, pipes to `dispatch-agent init`.
+- `init` → skill runs `detect`, **checks for existing config and offers Backup/Overwrite/Cancel**, assembles JSON from `callable==true` agents (with non-callable shown as opt-in), pipes to `dispatch-agent init`.
+- No `-p` / `-f` / `--dry-run` → skill collects prompt; empty/whitespace input re-prompts then aborts rather than forwarding.
 - `detect`, `config show`, `config list`, `config path` → forward after loading reference file.
 - `config edit` and bare `config` → intercepted; skill prints config path + edit guidance, does not forward.
 - `--help` → runs CLI help first, then loads `dispatch-guide.md`.
@@ -239,6 +280,8 @@ Section-by-section audit:
 
 - **CLI flag / behaviour drift**: install-guide.md notes the tested commit/date; no runtime check.
 - **`init` JSON schema drift**: documented schema in init-guide.md becomes stale if upstream changes. Manual sync required.
+- **Direct CLI `init` bypasses overwrite guard**: users who run `dispatch-agent init` outside the skill silently lose their config. Documented in `init-guide.md`; skill cannot prevent.
+- **`init` accepts unknown `cli` values**: spec mitigates by filtering on `callable==true` in the skill's default payload, but advanced users supplying their own JSON can still write garbage. Out of scope.
 - **`config edit` / bare `config` divergence from CLI**: skill prints instructions instead of opening editor. Documented behaviour.
 - **PATH cache after install**: handled by `hash -r || rehash || true` fallback chain.
 
